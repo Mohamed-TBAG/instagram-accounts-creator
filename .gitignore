@@ -4,3 +4,4 @@
 /bin/wireproxy
 /venv
 *.log
+__pycache__
