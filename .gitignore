@@ -1,0 +1,6 @@
+/bin/base.apk
+/bin/split_config.xxhdpi.apk
+/bin/dummy_photo.jpg
+/bin/wireproxy
+/venv
+*.log
