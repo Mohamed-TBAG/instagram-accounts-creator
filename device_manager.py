@@ -3,7 +3,7 @@ import shutil
 import time
 import subprocess
 import random
-import configparser
+import re
 import logging
 from pathlib import Path
 from selenium.webdriver.support.ui import WebDriverWait
@@ -11,14 +11,21 @@ from selenium.webdriver.support import expected_conditions as EC
 from appium.webdriver.common.appiumby import AppiumBy
 from appium import webdriver
 from appium.options.android import UiAutomator2Options
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.actions import interaction
+from selenium.webdriver.common.actions.action_builder import ActionBuilder
+from selenium.webdriver.common.actions.pointer_input import PointerInput
 import urllib.request
-AVD_NAME = "Pixel_6"
-AVD_BASE_DIR = Path("/home/tbag/.android/avd")
-PROJECT_BIN = Path("/home/tbag/Desktop/Workspace/instagram-masscreation/bin")
-SDK_EMULATOR_BIN = Path("/home/tbag/android-sdk/emulator/emulator")
-ADB_BIN = Path("/home/tbag/android-sdk/platform-tools/adb")
+
+from config import (
+    AVD_NAME, AVD_BASE_DIR, PROJECT_BIN, SDK_EMULATOR_BIN, ADB_BIN,
+    APPIUM_SERVER_URL, INSTAGRAM_PACKAGE, GALLERY_PHOTO_DEST,
+    DEVICE_PROXY_ADDRESS, UI_ELEMENT_TIMEOUT, INSTAGRAM_LOGIN_URL
+)
+
+
 logger = logging.getLogger("DeviceManager")
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 class DeviceManager:
     def __init__(self):
         self.avd_dir = AVD_BASE_DIR / f"{AVD_NAME}.avd"
@@ -26,6 +33,12 @@ class DeviceManager:
         if not self.config_ini.exists():
             logger.error(f"Config file not found at {self.config_ini}")
             raise FileNotFoundError(f"Config config.ini not found for AVD {AVD_NAME}")
+        if not ADB_BIN.exists():
+            logger.error(f"ADB binary not found at {ADB_BIN}")
+            raise FileNotFoundError(f"ADB binary not found at {ADB_BIN}")
+        if not ADB_BIN.exists():
+            logger.error(f"ADB binary not found at {ADB_BIN}")
+            raise FileNotFoundError(f"ADB binary not found at {ADB_BIN}")
     def generate_random_identity(self):
         """Generates random hardware identifiers."""
         imei = "".join([str(random.randint(0, 9)) for _ in range(15)])
@@ -78,34 +91,32 @@ class DeviceManager:
             dummy_photo = PROJECT_BIN / "dummy_photo.jpg"
         if not dummy_photo.exists():
             logger.warning(f"dummy_photo(.jpg/.JPG) not found at {PROJECT_BIN}. Skipping gallery seed.")
-            return
+            return False
         dest = "/sdcard/Pictures/selfie.jpg"
         logger.info("Seeding Gallery...")
         try:
-            # Ensure folder exists
             subprocess.run([str(ADB_BIN), "shell", "mkdir", "-p", "/sdcard/Pictures"], check=True)
-            # Push file
             subprocess.run([str(ADB_BIN), "push", str(dummy_photo), dest], check=True)
             cmd = [str(ADB_BIN), "shell", "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE", "-d", f"file://{dest}"]
             subprocess.run(cmd, check=True)
             logger.info("Gallery Seeded.")
+            return True
         except Exception as e:
             logger.error(f"Failed to seed gallery: {e}")
+            return False
     def warmup_actions(self):
         """Performs trusted device actions (Deep Link, Share Intent)."""
         logger.info("Performing Warm-up Routine...")
         try:
-            cmd = [str(ADB_BIN), "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", "https://www.instagram.com/accounts/login/", "com.instagram.android"]
+            cmd = [str(ADB_BIN), "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", INSTAGRAM_LOGIN_URL, INSTAGRAM_PACKAGE]
             subprocess.run(cmd, check=True)
             logger.info("Warmup: Deep Link Launched.")
-            time.sleep(10)
         except Exception:
             pass
         try:
-            cmd = [str(ADB_BIN), "shell", "am", "start", "-a", "android.intent.action.SEND", "-t", "image/*", "--eu", "android.intent.extra.STREAM", "file:///sdcard/Pictures/selfie.jpg", "com.instagram.android"]
+            cmd = [str(ADB_BIN), "shell", "am", "start", "-a", "android.intent.action.SEND", "-t", "image/*", "--eu", "android.intent.extra.STREAM", f"file://{GALLERY_PHOTO_DEST}", INSTAGRAM_PACKAGE]
             subprocess.run(cmd, check=True)
             logger.info("Warmup: Share Intent Launched.")
-            time.sleep(5)
         except Exception:
             pass
     def kill_emulator(self):
@@ -150,19 +161,20 @@ class DeviceManager:
         logger.error("Timeout waiting for emulator.")
         return False
     def apply_proxy(self):
-        cmd = [str(ADB_BIN), "shell", "settings", "put", "global", "http_proxy", "10.0.2.2:1081"]
+        cmd = [str(ADB_BIN), "shell", "settings", "put", "global", "http_proxy", DEVICE_PROXY_ADDRESS]
         subprocess.run(cmd, check=True)
-    def install_apk(self, apk_path):
-        logger.info(f"Installing APK: {apk_path}...")
-        if not os.path.exists(apk_path):
-             logger.error(f"APK not found at {apk_path}")
-             return
+
+    def launch_app(self, package_name):
+        """Launches an app using ADB Monkey (more reliable than am start)."""
+        logger.info(f"Launching {package_name}...")
         try:
-             cmd = [str(ADB_BIN), "install", "-r", "-g", str(apk_path)]
-             subprocess.run(cmd, check=True)
-             logger.info("APK Installed successfully.")
+            # Use 'monkey' to launch the app. It's often more robust than 'am start' for just opening the main activity.
+            cmd = [str(ADB_BIN), "shell", "monkey", "-p", package_name, "-c", "android.intent.category.LAUNCHER", "1"]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
         except subprocess.CalledProcessError as e:
-             logger.error(f"Failed to install APK: {e}")
+            logger.error(f"Failed to launch app {package_name}: {e}")
+            return False
     def install_split_apks(self, apk_paths):
         logger.info(f"Installing Split APKs: {apk_paths}...")
         valid_paths = []
@@ -171,62 +183,58 @@ class DeviceManager:
                 valid_paths.append(str(p))
             else:
                 logger.error(f"APK not found: {p}")
-                return
+                return False
         try:
              cmd = [str(ADB_BIN), "install-multiple", "-r", "-g"] + valid_paths
              subprocess.run(cmd, check=True)
              logger.info("Split APKs Installed successfully.")
+             return True
         except subprocess.CalledProcessError as e:
              logger.error(f"Failed to install Split APKs: {e}")
+             return False
     def get_all_apks(self):
         """Finds all .apk files in the PROJECT_BIN folder."""
         return list(PROJECT_BIN.glob("*.apk"))
 
-    def connect_appium(self, server_url='http://127.0.0.1:4723'):
-        """Connects to Appium using stable test settings."""
+    def connect_appium(self, server_url=None):
+        if server_url is None:
+            server_url = APPIUM_SERVER_URL
         logger.info(f"Connecting to Appium at {server_url}...")
-        
         try:
-            # Check if server is up
             urllib.request.urlopen(f"{server_url}/status", timeout=2)
         except Exception:
-            logger.error(f"Appium Server not found at {server_url}.")
-            return None
-
+            raise Exception(f"Appium Server not found at {server_url}.")
         options = UiAutomator2Options()
         options.platform_name = 'Android'
         options.automation_name = 'UiAutomator2'
         options.device_name = AVD_NAME 
-        
-        # We do NOT set app_package here. This forces Appium to create a generic session
-        # and NOT try to launch any specific app via 'am start'.
         options.no_reset = True
         options.set_capability('appium:autoLaunch', False)
         options.set_capability('appium:appWaitActivity', '*')
-        
-        # Stability timeouts
         options.set_capability('appium:uiautomator2ServerLaunchTimeout', 60000)
-        options.set_capability('appium:adbExecTimeout', 60000)
-
+        options.set_capability('appium:adbExecTimeout', 60000)  
+        options.set_capability('appium:newCommandTimeout', 300) # Wait up to 5 mins for new commands (e.g. user input)
         try:
             driver = webdriver.Remote(server_url, options=options)
             logger.info("Generic Driver connected. Manually activating Instagram...")
-            # This uses a different ADB command that doesn't care about 'multiple activities'
-            # driver.activate_app('com.instagram.android')
-            
             logger.info("Appium Connected.")
             return driver
         except Exception as e:
             logger.error(f"Failed to create Appium driver: {e}")
-            return None
+            raise Exception(f"Failed to create Appium driver: {e}")
 
-    def click_text(self, driver, text, timeout=15):
-        """Robustly clicks an element containing text (case-insensitive regex)."""
+    def click_text(self, driver, text, exact=False, timeout=15):
+        """Robustly clicks an element containing text (case-insensitive regex).
+        Properly escapes special regex characters in text.
+        """
         logger.info(f"Looking for text: '{text}'...")
         try:
             wait = WebDriverWait(driver, timeout)
-            # Regex: (?i) makes it case-insensitive
-            selector = f'new UiSelector().textMatches("(?i){text}")'
+            escaped_text = re.escape(text)
+            if not exact:
+                selector = f'new UiSelector().textMatches("(?i){escaped_text}")'
+            else:
+                selector = f'new UiSelector().text("{text}")'
             btn = wait.until(EC.presence_of_element_located((AppiumBy.ANDROID_UIAUTOMATOR, selector)))
             btn.click()
             logger.info(f"Successfully clicked '{text}'.")
@@ -235,27 +243,57 @@ class DeviceManager:
             logger.warning(f"Could not click text '{text}' within {timeout}s.")
             return False
 
-    def type_text(self, driver, hint_text, input_text, timeout=15):
-        """Finds an input field by its hint/text and types characters one by one."""
+    def type_text(self, driver, hint_text, input_text, exact=False, timeout=15):
         logger.info(f"Looking for input field with hint: '{hint_text}'...")
-        
-        # Reuse our robust ADB click logic to ensure we actually hit the field
-        if self.click_text(driver, hint_text, timeout=timeout):
+        if self.click_text(driver, hint_text, exact=exact, timeout=timeout):
             logger.info(f"Field '{hint_text}' clicked. Waiting for focus...")
-            time.sleep(2) # Give keyboard time to pop up
-            
-            # Type character by character
             logger.info(f"Typing: {input_text}...")
-            # Using ADB for reliability on 1-by-1 typing
             for char in input_text:
-                subprocess.run(["adb", "shell", "input", "text", char], check=False)
+                if char == ' ':
+                    subprocess.run([str(ADB_BIN), "shell", "input", "text", "%s"], check=False)
+                elif char == "'":
+                    subprocess.run([str(ADB_BIN), "shell", "input", "text", "\\'"], check=False)
+                else:
+                    subprocess.run([str(ADB_BIN), "shell", "input", "text", char], check=False)
                 time.sleep(0.1) 
-                
             logger.info("Typing complete.")
             return True
         else:
             logger.warning(f"Failed to find or click field with hint '{hint_text}'")
             return False
+
+    def swipe(self, driver, start_x, start_y, end_x, end_y, duration_ms=500):
+        """Performs a swipe action using W3C Actions."""
+        try:
+            actions = ActionChains(driver)
+            actions.w3c_actions = ActionBuilder(driver, mouse=PointerInput(interaction.POINTER_TOUCH, "touch"))
+            actions.w3c_actions.pointer_action.move_to_location(start_x, start_y)
+            actions.w3c_actions.pointer_action.pointer_down()
+            actions.w3c_actions.pointer_action.pause(duration_ms / 1000)
+            actions.w3c_actions.pointer_action.move_to_location(end_x, end_y)
+            actions.w3c_actions.pointer_action.release()
+            actions.perform()
+            return True
+        except Exception as e:
+            logger.error(f"Swipe failed: {e}")
+            # Fallback to ADB only if Appium fails
+            try:
+                subprocess.run([str(ADB_BIN), "shell", "input", "swipe", str(start_x), str(start_y), str(end_x), str(end_y), str(duration_ms)], check=False)
+                return True
+            except:
+                return False
+
+    def minimize_and_restore_app(self, package_name=None):
+        try:
+            if package_name is None:
+                package_name = INSTAGRAM_PACKAGE
+            logger.info("Minimizing app (Pressing HOME)...")
+            subprocess.run([str(ADB_BIN), "shell", "input", "keyevent", "KEYCODE_HOME"], check=True)
+            time.sleep(1)
+            logger.info(f"Restoring app ({package_name})...")
+            self.launch_app(package_name)
+        except Exception as e:
+            raise Exception(f"Failed to minimize and restore app: {e}")
 if __name__ == "__main__":
     dm = DeviceManager()
     dm.spoof_config()

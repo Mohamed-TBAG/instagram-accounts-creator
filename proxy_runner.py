@@ -6,11 +6,11 @@ import requests
 import signal
 import logging
 from pathlib import Path
-API_URL = "http://65.108.211.167:8000/connect"
-PROXY_PORT = 1080
-PROJECT_ROOT = Path("/home/tbag/Desktop/Workspace/instagram-masscreation")
-WIREPROXY_BIN = PROJECT_ROOT / "bin" / "wireproxy"
-WG_KEY_BIN = Path("/usr/bin/wg")
+
+from config import (
+    API_URL, PROXY_PORT, PROJECT_ROOT, WIREPROXY_BIN, WG_KEY_BIN,
+    WIREPROXY_CONF, PROXY_HOST, HTTP_PROXY_PORT
+)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("ProxyClient")
 class VPNProxyClient:
@@ -43,30 +43,30 @@ class VPNProxyClient:
             raise
     def create_config(self, lease, privkey):
         """Create a WireProxy config file."""
-        config = f"""
-            [Interface]
-            PrivateKey = {privkey}
-            Address = {lease['address']}
-            DNS = 8.8.8.8, 2606:4700:4700::1111
-            MTU = {lease['mtu']}
-            [Peer]
-            PublicKey = {lease['peer_pubkey']}
-            Endpoint = {lease['endpoint']}
-            AllowedIPs = ::/0
-            PersistentKeepalive = 25
-            [Socks5]
-            BindAddress = 127.0.0.1:{PROXY_PORT}
-            [Http]
-            BindAddress = 127.0.0.1:1081
-            """
+        config = f"""[Interface]
+PrivateKey = {privkey}
+Address = {lease['address']}
+DNS = 8.8.8.8, 2606:4700:4700::1111
+MTU = {lease['mtu']}
+[Peer]
+PublicKey = {lease['peer_pubkey']}
+Endpoint = {lease['endpoint']}
+AllowedIPs = ::/0
+PersistentKeepalive = 25
+[Socks5]
+BindAddress = {PROXY_HOST}:{PROXY_PORT}
+[Http]
+BindAddress = {PROXY_HOST}:{HTTP_PROXY_PORT}
+"""
         with open(self.conf_path, "w") as f:
             f.write(config)
         return self.conf_path
     def start_proxy(self):
         """Start wireproxy."""
         logger.info(f"Starting WireProxy on 127.0.0.1:{PROXY_PORT}...")
+        self.proxy_log_file = open("wireproxy.log", "w")
         cmd = [str(WIREPROXY_BIN), "--config", str(self.conf_path)]
-        self.proxy_process = subprocess.Popen(cmd)
+        self.proxy_process = subprocess.Popen(cmd, stdout=self.proxy_log_file, stderr=self.proxy_log_file)
         time.sleep(1)
         if self.proxy_process.poll() is not None:
              logger.error("WireProxy failed to start.")
@@ -93,18 +93,26 @@ class VPNProxyClient:
         self.create_config(lease, priv)
         self.start_proxy()
         logger.info(f"ROTATION COMPLETE. New IP: {lease['address']}")
-client = VPNProxyClient()
+
+# Global client reference for signal handler
+_client = None
+
 def signal_handler(sig, frame):
-    client.stop_proxy()
+    global _client
+    if _client:
+        _client.stop_proxy()
     sys.exit(0)
+
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
     try:
-        client.rotate_ip()
+        _client = VPNProxyClient()
+        _client.rotate_ip()
         logger.info("Press Enter to rotate IP, or Ctrl+C to exit.")
         while True:
             input()
-            client.rotate_ip()
+            _client.rotate_ip()
     except Exception as e:
         logger.error(f"Error: {e}")
-        client.stop_proxy()
+        if _client:
+            _client.stop_proxy()
