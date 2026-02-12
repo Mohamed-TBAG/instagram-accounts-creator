@@ -9,14 +9,17 @@ from pathlib import Path
 
 from config import (
     API_URL, PROXY_PORT, PROJECT_ROOT, WIREPROXY_BIN, WG_KEY_BIN,
-    WIREPROXY_CONF, PROXY_HOST, HTTP_PROXY_PORT
+    WIREPROXY_CONF, PROXY_HOST, HTTP_PROXY_PORT, LOG_DIR
 )
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("ProxyClient")
+from logger_config import setup_logging, get_logger
+
+logger = get_logger("ProxyClient")
 class VPNProxyClient:
     def __init__(self):
         self.proxy_process = None
-        self.conf_path = Path("wireproxy.conf")
+        self.conf_path = WIREPROXY_CONF
+        self.proxy_log_file = None
+        self.session = requests.Session()
         if not WIREPROXY_BIN.exists():
             logger.error(f"wireproxy binary not found at {WIREPROXY_BIN}")
             sys.exit(1)
@@ -35,7 +38,7 @@ class VPNProxyClient:
     def get_lease(self, pubkey):
         """Request a new IP lease from the server."""
         try:
-            resp = requests.post(API_URL, json={"pubkey": pubkey}, timeout=10)
+            resp = self.session.post(API_URL, json={"pubkey": pubkey}, timeout=10)
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
@@ -64,7 +67,12 @@ BindAddress = {PROXY_HOST}:{HTTP_PROXY_PORT}
     def start_proxy(self):
         """Start wireproxy."""
         logger.info(f"Starting WireProxy on 127.0.0.1:{PROXY_PORT}...")
-        self.proxy_log_file = open("wireproxy.log", "w")
+        if self.proxy_log_file:
+            try:
+                self.proxy_log_file.close()
+            except Exception:
+                pass
+        self.proxy_log_file = open(PROJECT_ROOT / "wireproxy.log", "w")
         cmd = [str(WIREPROXY_BIN), "--config", str(self.conf_path)]
         self.proxy_process = subprocess.Popen(cmd, stdout=self.proxy_log_file, stderr=self.proxy_log_file)
         time.sleep(1)
@@ -86,6 +94,12 @@ BindAddress = {PROXY_HOST}:{HTTP_PROXY_PORT}
             except subprocess.TimeoutExpired:
                 self.proxy_process.kill()
             self.proxy_process = None
+        if self.proxy_log_file:
+            try:
+                self.proxy_log_file.close()
+            except Exception:
+                pass
+            self.proxy_log_file = None
     def rotate_ip(self):
         self.stop_proxy()
         priv, pub = self.generate_keys()
@@ -104,6 +118,7 @@ def signal_handler(sig, frame):
     sys.exit(0)
 
 if __name__ == "__main__":
+    setup_logging(log_dir=LOG_DIR, app_name="WireProxy")
     signal.signal(signal.SIGINT, signal_handler)
     try:
         _client = VPNProxyClient()
