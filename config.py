@@ -3,15 +3,16 @@ from pathlib import Path
 def _env_path(name, default):
     raw = os.getenv(name, str(default))
     return Path(raw).expanduser()
-AVD_NAME = os.getenv("AVD_NAME", "Pixel_6")
-AVD_BASE_DIR = _env_path("AVD_BASE_DIR", "/home/tbag/.android/avd")
-SDK_EMULATOR_BIN = _env_path("SDK_EMULATOR_BIN", "/home/tbag/android-sdk/emulator/emulator")
 ADB_BIN = _env_path("ADB_BIN", "/home/tbag/android-sdk/platform-tools/adb")
 PROJECT_ROOT = Path(__file__).parent.resolve()
 PROJECT_BIN = PROJECT_ROOT / "bin"
 WIREPROXY_CONF = PROJECT_ROOT / "wireproxy.conf"
 WIREPROXY_BIN = _env_path("WIREPROXY_BIN", PROJECT_BIN / "wireproxy")
 LOG_DIR = PROJECT_ROOT / "logs"
+
+# ReDroid Configuration
+REDROID_IMAGE = os.getenv("REDROID_IMAGE", "redroid/redroid:11.0.0-latest")
+REDROID_GPU_MODE = os.getenv("REDROID_GPU_MODE", "guest")
 APPIUM_SERVER_URL = 'http://127.0.0.1:4723'
 APPIUM_SERVER_HOST = '127.0.0.1'
 APPIUM_SERVER_PORT = 4723

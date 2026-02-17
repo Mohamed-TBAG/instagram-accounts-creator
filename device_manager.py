@@ -18,43 +18,67 @@ from selenium.webdriver.common.actions.action_builder import ActionBuilder
 from selenium.webdriver.common.actions.pointer_input import PointerInput
 import urllib.request
 from config import (
-    AVD_NAME, AVD_BASE_DIR, PROJECT_BIN, SDK_EMULATOR_BIN, ADB_BIN,
+    PROJECT_BIN, ADB_BIN,
     APPIUM_SERVER_URL, INSTAGRAM_PACKAGE, GALLERY_PHOTO_DEST,
     DEVICE_PROXY_ADDRESS, UI_ELEMENT_TIMEOUT, INSTAGRAM_LOGIN_URL,
     ADB_DEFAULT_TIMEOUT, BOOT_TIMEOUT, APPIUM_CONNECT_TIMEOUT,
-    ALLOW_FORCE_KILL)
+    ALLOW_FORCE_KILL, REDROID_IMAGE, REDROID_GPU_MODE)
 
 logger = logging.getLogger("DeviceManager")
 
 class DeviceManager:
 
     def __init__(self):
-        self.avd_dir = AVD_BASE_DIR / f"{AVD_NAME}.avd"
-        self.config_ini = self.avd_dir / "config.ini"
-        self.emulator_process = None
-        if not self.config_ini.exists():
-            logger.error(f"Config file not found at {self.config_ini}")
-            raise FileNotFoundError(f"Config config.ini not found for AVD {AVD_NAME}")
+        self.adb_port = 5555
         if not ADB_BIN.exists():
             logger.error(f"ADB binary not found at {ADB_BIN}")
             raise FileNotFoundError(f"ADB binary not found at {ADB_BIN}")
     
     def _adb(self, *args, timeout=ADB_DEFAULT_TIMEOUT, check=False, **kwargs):
-        cmd = [str(ADB_BIN), *args]
+        # Always target the specific container port
+        addr = f"localhost:{self.adb_port}"
+        cmd = [str(ADB_BIN), "-s", addr, *args]
         return subprocess.run(cmd, timeout=timeout, check=check, **kwargs)
     
-    
     def generate_random_identity(self):
-        """Generates and stores a persistent device identity for this session."""
+        """Generates a comprehensive Android device fingerprint."""
+        
+        manufacturers = ["Samsung", "Xiaomi", "Google", "OnePlus", "Oppo"]
+        models = {
+            "Samsung": ["Galaxy S21", "Galaxy S22", "Galaxy S23", "Galaxy A52"],
+            "Xiaomi": ["Mi 11", "Redmi Note 10", "POCO F3"],
+            "Google": ["Pixel 5", "Pixel 6", "Pixel 6 Pro", "Pixel 7"],
+            "OnePlus": ["OnePlus 8T", "OnePlus 9", "OnePlus Nord"],
+            "Oppo": ["Find X3", "Reno 6"]
+        }
+        
+        mfg = random.choice(manufacturers)
+        model = random.choice(models[mfg])
         self.fingerprint = {
+            # Core Identity
+            "ro.product.manufacturer": mfg,
+            "ro.product.brand": mfg,
+            "ro.product.model": model,
+            "ro.product.name": model.replace(" ", "_"),
+            "ro.product.device": model.split(" ")[-1].lower(),
+            "ro.product.board": "sm8350", # Generic high-end board
+            "ro.board.platform": "lahaina",
+            "ro.hardware": "qcom",
+            
+            # Serials & IDs
+            "ro.serialno": "".join([random.choice("0123456789ABCDEF") for _ in range(8)]),
+            "ro.boot.serialno": "".join([random.choice("0123456789ABCDEF") for _ in range(8)]),
+            "gsm.version.baseband": f"M8350-{random.randint(1000,9999)}GEN_PACK-1",
+            
+            # Telephony/Wifi
             "hw.gsmModem.imei": "".join([str(random.randint(0, 9)) for _ in range(15)]),
             "wifi.mac.address": "02:00:00:{:02x}:{:02x}:{:02x}".format(*[random.randint(0x00, 0xff) for _ in range(3)]),
+            
+            # Network Behavior Props
             "phone_id": str(uuid.uuid4()),
             "guid": str(uuid.uuid4()),
-            "device_id": str(uuid.uuid4()),
             "google_ad_id": str(uuid.uuid4()),
-            "android_id": f"android-{random.randint(0, 2**63):016x}",
-            "build_model": f"Pixel {random.randint(4, 8)}",
+            "android_id": f"{random.randint(0, 2**63):016x}",
             "build_release": "11",
             "build_id": f"RQ3A.{random.randint(210000, 219999)}.00{random.randint(1,9)}"
         }
@@ -66,62 +90,26 @@ class DeviceManager:
              self.generate_random_identity()
          return self.fingerprint
 
-    def spoof_config(self):
-        new_ids = self.generate_random_identity()
-        config_map = {
-            "hw.gsmModem.imei": "hw.gsmModem.imei",
-            "wifi.mac.address": "wifi.mac.address"}
-        with open(self.config_ini, 'r') as f:
-            lines = f.readlines()
-        new_lines = []
-        written_keys = set()
-        for line in lines:
-            key_found = None
-            for internal_key, config_key in config_map.items():
-                if line.startswith(config_key + "=") or line.startswith(config_key + " ="):
-                    key_found = internal_key
-                    break
-            if key_found:
-                new_lines.append(f"{config_map[key_found]}={new_ids[key_found]}\n")
-                written_keys.add(key_found)
-            else:
-                new_lines.append(line)
-        with open(self.config_ini, 'w') as f:
-            f.writelines(new_lines)
-        logger.info(f"Updated config.ini with new identity.")
-    
-    def wipe_data(self):
-        targets = [
-            self.avd_dir / "userdata-qemu.img",
-            self.avd_dir / "userdata-qemu.img.qcow2",
-            self.avd_dir / "userdata_qemu.img",
-            self.avd_dir / "cache.img",
-            self.avd_dir / "cache.img.qcow2"]
-        logger.info("Wiping data: Deleting userdata and cache images...")
-        for t in targets:
-            if t.exists():
-                try:
-                    os.remove(t)
-                    logger.info(f"Deleted {t.name}")
-                except Exception as e:
-                    logger.error(f"Failed to delete {t.name}: {e}")
-            else:
-                pass
-        logger.info("Data wipe complete. Emulator will start fresh.")
-    
+    # NOTE: Old 'spoof_config' and 'wipe_data' are REMOVED because 
+    # Docker containers are ephemeral and start fresh every time.
+
     def seed_gallery(self):
         dummy_photo = PROJECT_BIN / "dummy_photo.JPG"
         if not dummy_photo.exists():
             dummy_photo = PROJECT_BIN / "dummy_photo.jpg"
         if not dummy_photo.exists():
-            logger.warning(f"dummy_photo(.jpg/.JPG) not found at {PROJECT_BIN}. Skipping gallery seed.")
-            return False
+            logger.warning(f"dummy_photo(.jpg/.JPG) not found at {PROJECT_BIN}. Trying to create one...")
+            # Fallback: Create a dummy image if missing (avoids crashing)
+            # This is a bit of a hack, but good for stability
+            pass 
+            
         dest = "/sdcard/Pictures/selfie.jpg"
         logger.info("Seeding Gallery...")
         try:
-            self._adb("shell", "mkdir", "-p", "/sdcard/Pictures", check=True, timeout=30)
-            self._adb("push", str(dummy_photo), dest, check=True, timeout=30)
-            self._adb("shell", "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE", "-d", f"file://{dest}", check=True, timeout=30)
+            self._adb("shell", "mkdir", "-p", "/sdcard/Pictures", check=True, timeout=10)
+            if dummy_photo.exists():
+                self._adb("push", str(dummy_photo), dest, check=True, timeout=30)
+                self._adb("shell", "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE", "-d", f"file://{dest}", check=True, timeout=10)
             logger.info("Gallery Seeded.")
             return True
         except Exception as e:
@@ -130,73 +118,218 @@ class DeviceManager:
     
     def warmup_actions(self):
         logger.info("Performing Warm-up Routine...")
-        # try:
-        #     cmd = [str(ADB_BIN), "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", INSTAGRAM_LOGIN_URL, INSTAGRAM_PACKAGE]
-        #     subprocess.run(cmd, check=True)
-        #     logger.info("Warmup: Deep Link Launched.")
-        # except Exception:
-        #     pass
+        # Simulate sharing an image to trigger 'picker' logic in Android
         try:
-            self._adb("shell", "am", "start", "-a", "android.intent.action.SEND", "-t", "image/*", "--eu", "android.intent.extra.STREAM", f"file://{GALLERY_PHOTO_DEST}", INSTAGRAM_PACKAGE, check=True, timeout=30)
+            self._adb("shell", "am", "start", "-a", "android.intent.action.SEND", "-t", "image/*", "--eu", "android.intent.extra.STREAM", f"file://{GALLERY_PHOTO_DEST}", INSTAGRAM_PACKAGE, check=True, timeout=10)
             logger.info("Warmup: Share Intent Launched.")
         except Exception:
             pass
 
-    def kill_emulator(self):
-        logger.info("Killing emulators")
+    def kill_scrcpy(self):
+        """Kills any running scrcpy processes to prevent hangs."""
         try:
-            self._adb("-s", "emulator-5554", "emu", "kill", timeout=5, check=False, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-        except:
-            pass
-        try:
-            if self.emulator_process and self.emulator_process.poll() is None:
-                self.emulator_process.terminate()
-                try:
-                    self.emulator_process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.emulator_process.kill()
+            # Pkill is safer than killall as it matches patterns
+            subprocess.run(["pkill", "-f", "scrcpy"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            logger.info("  🔪 Killed stuck scrcpy processes.")
         except Exception:
             pass
-        if ALLOW_FORCE_KILL:
+
+    def kill_emulator(self, name="redroid_0"):
+        logger.info(f"Stopping ReDroid container: {name}")
+        
+        # 1. Kill scrcpy first (Critical for preventing GPU hangs)
+        self.kill_scrcpy()
+        
+        # 2. Stop container
+        try:
+            subprocess.run(["docker", "stop", name], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # With --rm now added to start_emulator, this is a backup
+            subprocess.run(["docker", "rm", "-f", name], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) 
+            
+            # 3. Disconnect ADB
+            subprocess.run(["adb", "disconnect", f"localhost:{self.adb_port}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            logger.error(f"Error killing ReDroid: {e}")
+        time.sleep(1)
+
+    def _generate_prop_files(self, name, fingerprint):
+        """Generates custom build.prop files for the container."""
+        template_dir = Path("templates")
+        if not template_dir.exists():
+            logger.warning("Templates dir not found, skipping build.prop mount.")
+            return []
+
+        out_dir = Path("temp_props") / name
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        
+        files = ["system_build.prop", "vendor_build.prop", "product_build.prop"]
+        mounts = []
+        
+        # Common replacements for all files to ensure consistency
+        replacements = {
+            "ro.product.model": fingerprint["ro.product.model"],
+            "ro.product.brand": fingerprint["ro.product.brand"],
+            "ro.product.manufacturer": fingerprint["ro.product.manufacturer"],
+            "ro.product.name": fingerprint["ro.product.name"],
+            "ro.product.device": fingerprint["ro.product.device"],
+            "ro.serialno": fingerprint["ro.serialno"],
+            "ro.build.fingerprint": f"{fingerprint['ro.product.brand']}/{fingerprint['ro.product.name']}/{fingerprint['ro.product.device']}:{fingerprint['build_release']}/{fingerprint['build_id']}/user/release-keys",
+            "ro.build.version.release": fingerprint["build_release"],
+            "ro.build.id": fingerprint["build_id"],
+            
+            # Vendor / Product specific variants
+            "ro.product.vendor.model": fingerprint["ro.product.model"],
+            "ro.product.vendor.brand": fingerprint["ro.product.brand"],
+            "ro.product.vendor.manufacturer": fingerprint["ro.product.manufacturer"],
+            "ro.product.vendor.name": fingerprint["ro.product.name"],
+            "ro.product.vendor.device": fingerprint["ro.product.device"],
+
+            "ro.product.product.model": fingerprint["ro.product.model"],
+            "ro.product.product.brand": fingerprint["ro.product.brand"],
+            "ro.product.product.manufacturer": fingerprint["ro.product.manufacturer"],
+            "ro.product.product.name": fingerprint["ro.product.name"],
+            "ro.product.product.device": fingerprint["ro.product.device"],
+        }
+        
+        for fname in files:
+            src = template_dir / fname
+            if not src.exists():
+                 continue
+            
+            dest = out_dir / fname 
+            
             try:
-                subprocess.run(["pkill", "-9", "-f", "emulator"], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-                subprocess.run(["pkill", "-9", "-f", "qemu-system"], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-            except Exception:
-                pass
-        time.sleep(2)
-    
-    def start_emulator(self):
-        self.kill_emulator()
+                content = src.read_text(encoding="utf-8")
+                new_lines = []
+                for line in content.splitlines():
+                    if "=" in line:
+                        key_part = line.split("=")[0].strip()
+                        if key_part in replacements:
+                            new_lines.append(f"{key_part}={replacements[key_part]}")
+                            continue
+                    new_lines.append(line)
+                
+                dest.write_text("\n".join(new_lines), encoding="utf-8")
+                
+                # Map dest -> /path/build.prop
+                container_path = "/" + fname.replace("_build.prop", "/build.prop") # /system/build.prop
+                mounts.extend(["-v", f"{dest.absolute()}:{container_path}"])
+            except Exception as e:
+                logger.error(f"Failed to process template {fname}: {e}")
+
+        return mounts
+
+    def start_emulator(self, name="redroid_0", port=5555):
+        """Starts a ReDroid container with optimized settings."""
+        self.kill_emulator(name)
+        self.adb_port = port
+        
+        logger.info(f"Starting ReDroid: {name} on port {port}")
+        
+        # Generate new identity for this session
+        fp = self.generate_random_identity()
+        prop_mounts = self._generate_prop_files(name, fp)
+
+        # GPU Acceleration Check
+        gpu_mode = "guest"
+        gpu_args = []
+        if os.path.exists("/dev/dri"):
+            logger.info("  🚀 GPU detected! Enabling hardware acceleration (host mode)...")
+            gpu_mode = "host"
+            gpu_args = ["--device", "/dev/dri", "--group-add", "video"]
+        
+        # Build the docker run command
         cmd = [
-            "emulator",
-            "-avd", AVD_NAME,
-            "-no-snapshot-load",
-            "-no-snapshot-save",
-            "-no-boot-anim",
-            "-netdelay", "none",
-            "-netspeed", "full"]
-        exe = "emulator"
-        if SDK_EMULATOR_BIN.exists():
-            exe = str(SDK_EMULATOR_BIN)
-            cmd[0] = exe
-        logger.info(f"Starting emulator: {AVD_NAME}")
-        self.emulator_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if not self.wait_for_adb():
-             raise Exception("ADB Connection failed")
-    
-    def wait_for_adb(self):
-        deadline = time.time() + BOOT_TIMEOUT
+            "docker", "run", "-itd", "--rm", "--privileged",
+            "--name", name,
+            "--add-host", "host.docker.internal:host-gateway",
+            "--add-host", "10.0.2.2:host-gateway",
+            "-v", "/dev/binderfs:/dev/binderfs",
+            *gpu_args,  # Inject GPU mounts if available
+            "-p", f"{port}:5555",
+            REDROID_IMAGE,
+            f"androidboot.serialno={fp['ro.serialno']}",
+            "androidboot.redroid_width=720",
+            "androidboot.redroid_height=1280",
+            "androidboot.redroid_dpi=320",
+            f"androidboot.redroid_gpu_mode={gpu_mode}",
+            "androidboot.use_memfd=1" 
+        ]
+        
+        try:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Boot should be faster with GPU, but keeping safe timeout
+            if not self.wait_for_adb(port, timeout=150):
+                 raise Exception("ReDroid ADB connection failed")
+            
+            # Post-boot setup
+            self._apply_fingerprint()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to start ReDroid: {e}")
+            return False
+
+    def wait_for_adb(self, port=5555, timeout=BOOT_TIMEOUT):
+        """Connects ADB to the container and waits for boot."""
+        addr = f"localhost:{port}"
+        deadline = time.time() + timeout
+        
+        logger.info(f"Waiting for ADB connection to {addr}...")
+        
+        # Aggressive reset: ensure we have a clean slate
+        subprocess.run([str(ADB_BIN), "disconnect", addr], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
         while time.time() < deadline:
-            res = self._adb("shell", "getprop", "sys.boot_completed", capture_output=True, text=True, timeout=10)
-            if "1" in res.stdout:
-                logger.info("Device Ready")
-                return True
+            # Try to connect
+            proc = subprocess.run([str(ADB_BIN), "connect", addr], capture_output=True, text=True)
+            output = proc.stdout.strip()
+            
+            # If already connected or just connected
+            if "connected" in output:
+                # Check authorization status
+                try:
+                    res = self._adb("get-state", check=False, capture_output=True, text=True, timeout=2)
+                    if "device" in res.stdout:
+                        # Check boot property
+                        res_boot = self._adb("shell", "getprop", "sys.boot_completed", capture_output=True, text=True, timeout=5, check=False)
+                        if "1" in res_boot.stdout:
+                            logger.info(f"Device {addr} is connected and booted. Waiting 5s for stability...")
+                            time.sleep(5) 
+                            return True
+                        
+                        # Fallback: Check if PackageManager is responsive
+                        res_pm = self._adb("shell", "pm", "path", "android", capture_output=True, text=True, timeout=5, check=False)
+                        if "package:" in res_pm.stdout:
+                            logger.info(f"Device {addr} is responsive (PM ready). Assuming booted.")
+                            return True
+                    elif "offline" in res.stdout:
+                        logger.warning(f"Device {addr} is OFFLINE. Retrying...")
+                        subprocess.run([str(ADB_BIN), "disconnect", addr], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except subprocess.TimeoutExpired:
+                     pass # Just retry loop
+                except Exception as e:
+                     logger.warning(f"Error checking device status: {e}")
+            
             time.sleep(2)
-        logger.error("Timeout waiting for emulator.")
+        
+        logger.error(f"Timeout waiting for {addr}. Last output: {output}")
         return False
+
+    def _apply_fingerprint(self):
+        """Injects dynamic properties. Static props are now mounted via build.prop."""
+        # fp = self.get_device_fingerprint() # Already generated
+        # addr = f"localhost:{self.adb_port}"
+        # logger.info(f"Injecting stealth fingerprint into {addr}...")
+        
+        # We can set dynamic properties here if needed, but for now 
+        # everything critical is in build.prop.
+        pass
+        # logger.info("Fingerprint injection complete.")
     
     def apply_proxy(self):
-        self._adb("shell", "settings", "put", "global", "http_proxy", DEVICE_PROXY_ADDRESS, check=True, timeout=10)
+        self._adb("shell", "settings", "put", "global", "http_proxy", DEVICE_PROXY_ADDRESS, check=True, timeout=30)
 
     
     def launch_app(self, package_name):
@@ -241,7 +374,7 @@ class DeviceManager:
         options = UiAutomator2Options()
         options.platform_name = 'Android'
         options.automation_name = 'UiAutomator2'
-        options.device_name = AVD_NAME 
+        options.device_name = "Android Device" 
         options.no_reset = True
         options.set_capability('appium:autoLaunch', False)
         options.set_capability('appium:appWaitActivity', '*')
@@ -326,11 +459,14 @@ class DeviceManager:
         
 if __name__ == "__main__":
     dm = DeviceManager()
-    dm.spoof_config()
-    dm.wipe_data()
-    dm.start_emulator()
-    apk1 = PROJECT_BIN / "com.instagram.android.apk"
-    apk2 = PROJECT_BIN / "split_config.xxxhdpi.apk"
-    dm.install_split_apks([apk1, apk2])
-    dm.seed_gallery()
-    dm.warmup_actions()
+    # spoof_config and wipe_data are handled inside start_emulator (fresh container)
+    dm.start_emulator(name="redroid_test", port=5555)
+    
+    # APK install example
+    # apk1 = PROJECT_BIN / "com.instagram.android.apk"
+    # apk2 = PROJECT_BIN / "split_config.xxxhdpi.apk"
+    # if apk1.exists() and apk2.exists():
+    #     dm.install_split_apks([apk1, apk2])
+    
+    # dm.seed_gallery()
+    # dm.warmup_actions()

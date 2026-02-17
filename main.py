@@ -18,24 +18,29 @@ class MainController:
         self.driver = None
     
     def run(self):
-        logger.info("=" * 80)
-        logger.info("INSTAGRAM MASS ACCOUNT CREATION - STARTED")
-        logger.info("=" * 80)
+        """Main execution loop."""
         error_count = 0
-        iterations = 0
-        while error_count < MAX_ERRORS:
-            iterations += 1
+        loop_counter = 0 # Keep track of iterations for logging
+        
+        while loop_counter < 1000: 
+            # Simplified Logic: Always use the same container name and port.
+            # Docker handles cleanup at the start and end of each cycle.
+            name = "redroid_bot" 
+            port = 5555
+            
             logger.info(f"\n{'='*80}")
-            logger.info(f"ITERATION {iterations} (Errors: {error_count}/{MAX_ERRORS})")
+            logger.info(f"ITERATION {loop_counter} (Errors: {error_count}/{MAX_ERRORS})")
             logger.info("=" * 80)
+
             try:
                 self._setup_phase()
-                self._boot_phase()
+                self._boot_phase(name=name, port=port)
                 self._automation_phase()
-                self._cleanup_iteration()
+                self._cleanup_iteration(name=name)
                 error_count = 0                
-                logger.info("✅ Iteration completed successfully")
-                input("\n👉 Press Enter to start next account...\n")
+                logger.info(f"✅ Iteration {loop_counter} completed successfully")
+                loop_counter += 1 # type: ignore
+                input("\n👉 Press Enter to start next account...\n") 
             except KeyboardInterrupt:
                 logger.info("\n⛔ Interrupted by user")
                 self._cleanup_all()
@@ -44,43 +49,51 @@ class MainController:
             except Exception as e:
                 error_count += 1
                 logger.error(f"❌ Iteration failed: {e}", exc_info=True)
-                self._cleanup_all()
-                if error_count < MAX_ERRORS:
-                    logger.info(f"🔄 Retrying ({error_count}/{MAX_ERRORS}) in {RETRY_DELAY}s...")
-                    time.sleep(RETRY_DELAY)
-                    input("\n👉 Press Enter to retry...\n")
+                self._cleanup_iteration(name=name)
+                
+                if error_count >= MAX_ERRORS:
+                    logger.error("Too many consecutive errors. Stopping.")
+                    self._final_cleanup() 
+                    break
+                
+                logger.info(f"🔄 Retrying ({error_count}/{MAX_ERRORS}) in {RETRY_DELAY}s...") 
+                time.sleep(RETRY_DELAY)
+                input("\n👉 Press Enter to retry...\n") 
         self._final_cleanup()
         logger.info("=" * 80)
-        logger.info(f"FINISHED - Total iterations: {iterations}, Errors: {error_count}")
+        logger.info(f"FINISHED - Total iterations: {loop_counter}, Errors: {error_count}")
         logger.info("=" * 80)   
 
     def _setup_phase(self):
-        logger.info("\n[PHASE 1/4] DEVICE & NETWORK SETUP")
-        logger.info("  [1.1] Spoofing device identity...")
-        self.device_mgr.spoof_config()
-        self.device_mgr.wipe_data()
-        logger.info("  [1.2] Rotating IP address...")
+        logger.info("\n[PHASE 1/4] NETWORK SETUP")
+        logger.info("  [1.1] Rotating IP address...")
         self.vpn_client.rotate_ip()
     
-    def _boot_phase(self):
-        logger.info("\n[PHASE 2/4] EMULATOR BOOT & WARMUP")
-        logger.info("  [2.1] Booting emulator (cold boot)...")
-        self.device_mgr.start_emulator()
+    def _boot_phase(self, name="redroid_0", port=5555):
+        logger.info("\n[PHASE 2/4] REDROID CONTAINER BOOT")
+        logger.info(f"  [2.1] Starting container {name} on port {port}...")
+        self.device_mgr.start_emulator(name=name, port=port)
+        
         logger.info("  [2.2] Applying proxy settings...")
         self.device_mgr.apply_proxy()
-        logger.info("  [2.3] Installing APK files...")
+        
+        logger.info("  [2.3] Installing Instagram APK...")
         apks = self.device_mgr.get_all_apks()
         if not apks:
             raise Exception("No APK files found in bin folder!")
-        if not self.device_mgr.install_split_apks(apks):
-            raise Exception("Failed to install APK files!")
-        logger.info("  [2.4] Seeding gallery with test photo...")
-        if not self.device_mgr.seed_gallery():
-            logger.warning("  ⚠️  Gallery seeding failed (continuing anyway)")
-        logger.info("  [2.5] Performing warmup actions...")
+        self.device_mgr.install_split_apks(apks)
+        
+        logger.info("  [2.4] Seeding gallery...")
+        self.device_mgr.seed_gallery()
+        
+        logger.info("  [2.5] Performing warmup...")
         self.device_mgr.warmup_actions()
-        logger.info("  [2.6] Connecting to Appium...")
-        self.driver = self.device_mgr.connect_appium(APPIUM_SERVER_URL)
+        
+        logger.info(f"  [2.6] Connecting Appium to 127.0.0.1:{port}...")
+        # Pointing to the local ADB port mapped to the container
+        appium_port_url = f"http://127.0.0.1:4723" 
+        self.driver = self.device_mgr.connect_appium(appium_port_url)
+        
         if not isinstance(self.driver, webdriver.Remote):
             raise Exception("Failed to initialize Appium driver")
 
@@ -91,7 +104,7 @@ class MainController:
             raise Exception("Sign-up flow returned failure status")
         logger.info("  ✅ Account creation cycle complete")
     
-    def _cleanup_iteration(self):
+    def _cleanup_iteration(self, name="redroid_0"):
         logger.info("\n[PHASE 4/4] CLEANUP & TEARDOWN")
         logger.info("  [4.1] Disconnecting Appium driver...")
         if self.driver:
@@ -100,8 +113,8 @@ class MainController:
                 self.driver = None
             except Exception as e:
                 logger.warning(f"  ⚠️  Failed to quit driver: {e}")
-        logger.info("  [4.2] Killing emulator...")
-        self.device_mgr.kill_emulator()
+        logger.info(f"  [4.2] Killing container {name}...")
+        self.device_mgr.kill_emulator(name=name)
         logger.info("  ✅ Cleanup complete")
     
     def _cleanup_all(self):

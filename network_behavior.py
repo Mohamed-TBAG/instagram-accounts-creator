@@ -31,7 +31,7 @@ class NetworkBehavior:
             "X-Fb-Rmd": "state=URL_ELIGIBLE"}
 
     def _construct_user_agent(self):
-        model = self.fingerprint["build_model"] 
+        model = self.fingerprint["ro.product.model"] 
         return f"Instagram 415.0.0.36.76 Android (30/11; 440dpi; 1080x2340; Google/exclude; {model}; generic_x86_64_arm64; ranchu; en_US; 874816550)"
 
     def _get_common_headers(self):
@@ -68,11 +68,11 @@ class NetworkBehavior:
     def send_launcher_sync(self):
         url = "https://i.instagram.com/api/v1/launcher/sync/"
         headers = self._get_common_headers()
-        headers["X-Ig-Device-Id"] = self.fingerprint["device_id"]
+        headers["X-Ig-Device-Id"] = self.fingerprint["guid"]
         headers["X-Ig-Android-Id"] = self.fingerprint["android_id"]
         data = {
             "configs": "ig_android_launcher_sync_config",
-            "id": self.fingerprint["device_id"]}
+            "id": self.fingerprint["guid"]}
         try:
             logger.info("📡 Sending Launcher Sync...")
             resp = self.session.post(url, headers=headers, data=data, timeout=10)
@@ -85,7 +85,7 @@ class NetworkBehavior:
     def send_prefill_check(self):
         url = "https://i.instagram.com/api/v1/accounts/contact_point_prefill/"
         headers = self._get_common_headers()
-        headers["X-Ig-Device-Id"] = self.fingerprint["device_id"]
+        headers["X-Ig-Device-Id"] = self.fingerprint["guid"]
         data = {
             "phone_id": self.fingerprint["phone_id"],
             "_uuid": self.fingerprint["guid"],
@@ -102,9 +102,9 @@ class NetworkBehavior:
     def send_qe_sync(self):
         url = "https://i.instagram.com/api/v1/qe/sync/"
         headers = self._get_common_headers()
-        headers["X-Ig-Device-Id"] = self.fingerprint["device_id"]
+        headers["X-Ig-Device-Id"] = self.fingerprint["guid"]
         data = {
-            "id": self.fingerprint["device_id"],
+            "id": self.fingerprint["guid"],
             "experiments": "ig_android_growth_fx_refactor"}
         try:
             logger.info("📡 Sending QE Sync...")
