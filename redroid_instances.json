@@ -1,0 +1,7 @@
+{
+    "red1": {
+        "port": 5560,
+        "image": "redroid/redroid:11.0.0-latest",
+        "adb_serial": "localhost:5560"
+    }
+}

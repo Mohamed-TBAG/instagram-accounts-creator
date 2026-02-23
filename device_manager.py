@@ -152,6 +152,16 @@ class DeviceManager:
             logger.error(f"Error killing ReDroid: {e}")
         time.sleep(1)
 
+    def kill_all_emulators(self):
+        """Forcefully removes all stopped or running Redroid containers from the host."""
+        logger.info("🔪 Wiping all background Redroid containers...")
+        try:
+            # -f ancestor catches any container built from the redroid image
+            cmd = "docker rm -f $(docker ps -aq -f ancestor=redroid/redroid:11.0.0-latest)"
+            subprocess.run(cmd, shell=True, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            logger.error(f"Error wiping orphan containers: {e}")
+
     def _generate_prop_files(self, name, fingerprint):
         """Generates custom build.prop files for the container."""
         template_dir = Path("templates")
@@ -167,6 +177,9 @@ class DeviceManager:
         files = ["system_build.prop", "vendor_build.prop", "product_build.prop"]
         mounts = []
         
+        build_fp = f"{fingerprint['ro.product.brand']}/{fingerprint['ro.product.name']}/{fingerprint['ro.product.device']}:{fingerprint['build_release']}/{fingerprint['build_id']}/user/release-keys"
+        desc = f"{fingerprint['ro.product.name']}-user {fingerprint['build_release']} {fingerprint['build_id']} release-keys"
+        
         # Common replacements for all files to ensure consistency
         replacements = {
             "ro.product.model": fingerprint["ro.product.model"],
@@ -175,9 +188,29 @@ class DeviceManager:
             "ro.product.name": fingerprint["ro.product.name"],
             "ro.product.device": fingerprint["ro.product.device"],
             "ro.serialno": fingerprint["ro.serialno"],
-            "ro.build.fingerprint": f"{fingerprint['ro.product.brand']}/{fingerprint['ro.product.name']}/{fingerprint['ro.product.device']}:{fingerprint['build_release']}/{fingerprint['build_id']}/user/release-keys",
+            "ro.build.fingerprint": build_fp,
             "ro.build.version.release": fingerprint["build_release"],
             "ro.build.id": fingerprint["build_id"],
+            "ro.build.display.id": desc,
+            "ro.build.product": fingerprint["ro.product.device"],
+            "ro.build.description": desc,
+            "ro.system.build.fingerprint": build_fp,
+            "ro.system_ext.build.fingerprint": build_fp,
+            "ro.vendor.build.fingerprint": build_fp,
+            "ro.product.build.fingerprint": build_fp,
+            
+            # System specific variants
+            "ro.product.system.model": fingerprint["ro.product.model"],
+            "ro.product.system.brand": fingerprint["ro.product.brand"],
+            "ro.product.system.manufacturer": fingerprint["ro.product.manufacturer"],
+            "ro.product.system.name": fingerprint["ro.product.name"],
+            "ro.product.system.device": fingerprint["ro.product.device"],
+
+            "ro.product.system_ext.model": fingerprint["ro.product.model"],
+            "ro.product.system_ext.brand": fingerprint["ro.product.brand"],
+            "ro.product.system_ext.manufacturer": fingerprint["ro.product.manufacturer"],
+            "ro.product.system_ext.name": fingerprint["ro.product.name"],
+            "ro.product.system_ext.device": fingerprint["ro.product.device"],
             
             # Vendor / Product specific variants
             "ro.product.vendor.model": fingerprint["ro.product.model"],
@@ -222,111 +255,131 @@ class DeviceManager:
         return mounts
 
     def start_emulator(self, name="redroid_0", port=5555):
-        """Starts a ReDroid container with optimized settings."""
-        self.kill_emulator(name)
+        """Starts a fresh Redroid container (Docker) with full GPU acceleration."""
         self.adb_port = port
+        addr = f"localhost:{port}"
         
-        logger.info(f"Starting ReDroid: {name} on port {port}")
+        logger.info(f"Starting Redroid Container: {name} on port {port}")
         
-        # Generate new identity for this session
+        # 1. Clean Slate: Kill existing container & ADB
+        self.kill_emulator(name)
+        subprocess.run([str(ADB_BIN), "disconnect", addr], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        # 2. Generate Identity
         fp = self.generate_random_identity()
-        prop_mounts = self._generate_prop_files(name, fp)
-
-        # GPU Acceleration Check
-        gpu_mode = "guest"
-        gpu_args = []
-        if os.path.exists("/dev/dri"):
-            logger.info("  🚀 GPU detected! Enabling hardware acceleration (host mode)...")
-            gpu_mode = "host"
-            gpu_args = ["--device", "/dev/dri", "--group-add", "video"]
         
-        # Build the docker run command
-        cmd = [
-            "docker", "run", "-itd", "--rm", "--privileged",
-            "--name", name,
-            "--add-host", "host.docker.internal:host-gateway",
-            "--add-host", "10.0.2.2:host-gateway",
-            "-v", "/dev/binderfs:/dev/binderfs",
-            *gpu_args,  # Inject GPU mounts if available
-            "-p", f"{port}:5555",
-            REDROID_IMAGE,
+        # 3. Generate deeper build.prop Identity files
+        prop_mounts = self._generate_prop_files(name, fp)
+        # 4. GPU Strategy
+        
+        def get_docker_cmd():
+            return [
+                "docker", "run", "-itd", "--rm", "--privileged",
+                "--name", name,
+                "--pull", "never",
+                "-v", "/dev/binderfs:/dev/binderfs", 
+                "--tmpfs", "/data:rw,exec,suid",
+                f"--mac-address={fp['wifi.mac.address']}",
+                "-p", f"{port}:5555",
+                *prop_mounts,
+                REDROID_IMAGE,
+                "androidboot.redroid_width=720",
+                "androidboot.redroid_height=1280",
+                "androidboot.redroid_fps=30",
+                "androidboot.redroid_gpu_mode=guest",
+                "androidboot.use_memfd=1", 
+                "debug.sf.nobootanimation=1"
+                        ]
+            """
+            *prop_mounts,
+            *extra_args,
             f"androidboot.serialno={fp['ro.serialno']}",
-            "androidboot.redroid_width=720",
-            "androidboot.redroid_height=1280",
             "androidboot.redroid_dpi=320",
-            f"androidboot.redroid_gpu_mode={gpu_mode}",
-            "androidboot.use_memfd=1" 
-        ]
+            f"androidboot.redroid_gpu_mode={mode}",
+            "debug.sf.nobootanimation=1",
+            f"ro.product.manufacturer={fp['ro.product.manufacturer'].replace(' ', '_')}",
+            f"ro.product.brand={fp['ro.product.brand'].replace(' ', '_')}",
+            f"ro.product.model={fp['ro.product.model'].replace(' ', '_')}",
+            f"ro.product.name={fp['ro.product.name'].replace(' ', '_')}",
+            f"ro.product.device={fp['ro.product.device'].replace(' ', '_')}"
+            """
+        # 4. Run directly in Guest Mode (Host mode verified unsupported on Intel XE for this image)
         
         try:
-            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            # Boot should be faster with GPU, but keeping safe timeout
-            if not self.wait_for_adb(port, timeout=150):
-                 raise Exception("ReDroid ADB connection failed")
-            
-            # Post-boot setup
-            self._apply_fingerprint()
-            return True
-        except Exception as e:
-            logger.error(f"Failed to start ReDroid: {e}")
+            cmd = get_docker_cmd()
+            cmd_str = [str(c) for c in cmd]
+            logger.debug(f"Run Cmd: {' '.join(cmd_str)}")
+            subprocess.run(cmd_str, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            success = True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"  ❌ Critical: Failed to start container in Guest mode: {e}")
             return False
 
-    def wait_for_adb(self, port=5555, timeout=BOOT_TIMEOUT):
-        """Connects ADB to the container and waits for boot."""
+        if not success:
+            return False
+            
+        # 5. Wait for Boot
+        logger.info("  ⏳ Container started. Waiting for Android boot...")
+        if not self.wait_for_adb(port, timeout=180, name=name):
+             logger.error("Redroid ADB Connection Failed (Timeout)")
+             return False
+
+        # 6. Apply Post-Boot Identity Settings (like Android ID)
+        logger.info("  🔧 Applying Android ID and deeper identity spoofing...")
+        try:
+             self._adb("shell", "settings", "put", "secure", "android_id", fp['android_id'], check=False)
+             # Some system info needs to be broadcast changed
+        except Exception as e:
+             logger.warning(f"Failed to set android_id: {e}")
+
+        # 6. Post-Boot Setup
+        logger.info("  ✅ Redroid is Online!")
+        return True
+
+
+
+    def wait_for_adb(self, port=5555, timeout=BOOT_TIMEOUT, name="redroid_0"):
+        """Waits for the container strictly using docker exec (more reliable), then connects ADB."""
         addr = f"localhost:{port}"
         deadline = time.time() + timeout
         
-        logger.info(f"Waiting for ADB connection to {addr}...")
-        
-        # Aggressive reset: ensure we have a clean slate
+        logger.info(f"Waiting for {name} to fully boot (via docker exec)...")
+        # Ensure clean state
         subprocess.run([str(ADB_BIN), "disconnect", addr], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
         while time.time() < deadline:
-            # Try to connect
-            proc = subprocess.run([str(ADB_BIN), "connect", addr], capture_output=True, text=True)
-            output = proc.stdout.strip()
+            try:
+                # Check boot status via docker natively (doesn't hang like adb does)
+                boot_proc = subprocess.run(
+                    ["docker", "exec", name, "getprop", "sys.boot_completed"], 
+                    capture_output=True, text=True, timeout=2
+                )
+                
+                if boot_proc.returncode == 0 and boot_proc.stdout.strip() == "1":
+                    # Fully disconnect first to clear any stuck 'offline' bindings
+                    subprocess.run([str(ADB_BIN), "disconnect", addr], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    time.sleep(0.5)
+                    
+                    # Connect and assess state
+                    subprocess.run([str(ADB_BIN), "connect", addr], capture_output=True, text=True, timeout=5)
+                    time.sleep(1.5) # brief pause for ADB auth to settle
+                    
+                    res = subprocess.run(f"adb -s {addr} get-state", shell=True, capture_output=True, text=True).stdout.strip()
+                    if "device" in res and "offline" not in res:
+                        logger.info(f"  ✅ Redroid ADB is Online ({addr})!")
+                        return True
+                    else:
+                        logger.debug(f"ADB connected but state is '{res}'. Retrying...")
+            except subprocess.TimeoutExpired:
+                pass
+            except Exception as e:
+                logger.warning(f"Error checking boot status: {e}")
+                
+            time.sleep(1)
             
-            # If already connected or just connected
-            if "connected" in output:
-                # Check authorization status
-                try:
-                    res = self._adb("get-state", check=False, capture_output=True, text=True, timeout=2)
-                    if "device" in res.stdout:
-                        # Check boot property
-                        res_boot = self._adb("shell", "getprop", "sys.boot_completed", capture_output=True, text=True, timeout=5, check=False)
-                        if "1" in res_boot.stdout:
-                            logger.info(f"Device {addr} is connected and booted. Waiting 5s for stability...")
-                            time.sleep(5) 
-                            return True
-                        
-                        # Fallback: Check if PackageManager is responsive
-                        res_pm = self._adb("shell", "pm", "path", "android", capture_output=True, text=True, timeout=5, check=False)
-                        if "package:" in res_pm.stdout:
-                            logger.info(f"Device {addr} is responsive (PM ready). Assuming booted.")
-                            return True
-                    elif "offline" in res.stdout:
-                        logger.warning(f"Device {addr} is OFFLINE. Retrying...")
-                        subprocess.run([str(ADB_BIN), "disconnect", addr], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                except subprocess.TimeoutExpired:
-                     pass # Just retry loop
-                except Exception as e:
-                     logger.warning(f"Error checking device status: {e}")
-            
-            time.sleep(2)
-        
-        logger.error(f"Timeout waiting for {addr}. Last output: {output}")
+        logger.error(f"Timeout waiting for {name} to boot.")
         return False
 
-    def _apply_fingerprint(self):
-        """Injects dynamic properties. Static props are now mounted via build.prop."""
-        # fp = self.get_device_fingerprint() # Already generated
-        # addr = f"localhost:{self.adb_port}"
-        # logger.info(f"Injecting stealth fingerprint into {addr}...")
-        
-        # We can set dynamic properties here if needed, but for now 
-        # everything critical is in build.prop.
-        pass
-        # logger.info("Fingerprint injection complete.")
     
     def apply_proxy(self):
         self._adb("shell", "settings", "put", "global", "http_proxy", DEVICE_PROXY_ADDRESS, check=True, timeout=30)
@@ -346,12 +399,19 @@ class DeviceManager:
         logger.info(f"Installing Split APKs: {apk_paths}...")
         valid_paths = []
         for p in apk_paths:
-            if os.path.exists(p):
-                valid_paths.append(str(p))
+            # Normalize path if it's a string or Path object
+            p_obj = Path(p)
+            if not p_obj.is_absolute():
+                 p_obj = PROJECT_BIN / p_obj.name
+            
+            if p_obj.exists():
+                valid_paths.append(str(p_obj))
             else:
-                logger.error(f"APK not found: {p}")
+                logger.error(f"APK not found: {p_obj}")
                 return False
+        
         try:
+             # install-multiple requires matching signatures, usually fine for splits
              cmd = ["install-multiple", "-r", "-g"] + valid_paths
              self._adb(*cmd, check=True, timeout=120)
              logger.info("Split APKs Installed successfully.")

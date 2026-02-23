@@ -13,9 +13,9 @@ if dm.start_emulator("redroid_test", 5555):
     time.sleep(5)
     
     # Check props
-    res_model = subprocess.check_output(["adb", "-s", "localhost:5555", "shell", "getprop", "ro.product.model"]).decode().strip()
-    res_brand = subprocess.check_output(["adb", "-s", "localhost:5555", "shell", "getprop", "ro.product.brand"]).decode().strip()
-    res_serial = subprocess.check_output(["adb", "-s", "localhost:5555", "shell", "getprop", "ro.serialno"]).decode().strip()
+    res_model = subprocess.check_output(["adb", "-s", "localhost:5556", "shell", "getprop", "ro.product.model"]).decode().strip()
+    res_brand = subprocess.check_output(["adb", "-s", "localhost:5556", "shell", "getprop", "ro.product.brand"]).decode().strip()
+    res_serial = subprocess.check_output(["adb", "-s", "localhost:5556", "shell", "getprop", "ro.serialno"]).decode().strip()
     
     print(f"Model: {res_model}")
     print(f"Brand: {res_brand}")

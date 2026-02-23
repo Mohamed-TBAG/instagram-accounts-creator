@@ -23,10 +23,8 @@ class MainController:
         loop_counter = 0 # Keep track of iterations for logging
         
         while loop_counter < 1000: 
-            # Simplified Logic: Always use the same container name and port.
-            # Docker handles cleanup at the start and end of each cycle.
-            name = "redroid_bot" 
             port = 5555
+            name = f"redroid_0" 
             
             logger.info(f"\n{'='*80}")
             logger.info(f"ITERATION {loop_counter} (Errors: {error_count}/{MAX_ERRORS})")
@@ -34,16 +32,18 @@ class MainController:
 
             try:
                 self._setup_phase()
-                self._boot_phase(name=name, port=port)
+                if not self._boot_phase(name=name, port=port):
+                    return False
+                
                 self._automation_phase()
                 self._cleanup_iteration(name=name)
                 error_count = 0                
                 logger.info(f"✅ Iteration {loop_counter} completed successfully")
                 loop_counter += 1 # type: ignore
-                input("\n👉 Press Enter to start next account...\n") 
+                # Next loop iteration automatically without prompt if not aborting... 
             except KeyboardInterrupt:
                 logger.info("\n⛔ Interrupted by user")
-                self._cleanup_all()
+                self._cleanup_all(name=name)
                 print("\nStopped.")
                 break
             except Exception as e:
@@ -72,7 +72,9 @@ class MainController:
     def _boot_phase(self, name="redroid_0", port=5555):
         logger.info("\n[PHASE 2/4] REDROID CONTAINER BOOT")
         logger.info(f"  [2.1] Starting container {name} on port {port}...")
-        self.device_mgr.start_emulator(name=name, port=port)
+        if not self.device_mgr.start_emulator(name=name, port=port):
+             logger.error("❌ Failed to start emulator. Skipping iteration.")
+             return False
         
         logger.info("  [2.2] Applying proxy settings...")
         self.device_mgr.apply_proxy()
@@ -85,6 +87,11 @@ class MainController:
         
         logger.info("  [2.4] Seeding gallery...")
         self.device_mgr.seed_gallery()
+        # --- HALT BEFORE AUTOMATION & APPIUM CONNECTION ---
+        print(f"\n[PAUSED] Boot phase completed! Container '{name}' is running on port {port}.")
+        print("Device Identity (MAC, UUIDs, Model) has been injected cleanly.")
+        input("👉 Press Enter to connect Appium and begin automation (or Ctrl+C to abort)...\n")
+        
         
         logger.info("  [2.5] Performing warmup...")
         self.device_mgr.warmup_actions()
@@ -117,7 +124,7 @@ class MainController:
         self.device_mgr.kill_emulator(name=name)
         logger.info("  ✅ Cleanup complete")
     
-    def _cleanup_all(self):
+    def _cleanup_all(self, name="redroid_0"):
         logger.warning("Performing emergency cleanup...")
         try:
             if self.driver:
@@ -125,7 +132,7 @@ class MainController:
         except:
             pass
         try:
-            self.device_mgr.kill_emulator()
+            self.device_mgr.kill_all_emulators()
         except:
             pass
         try:

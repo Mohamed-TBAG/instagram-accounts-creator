@@ -28,7 +28,7 @@ def setup_logging(log_dir=None, app_name="Instagram"):
     log_dir.mkdir(parents=True, exist_ok=True)
     
     # Create log file path with timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d")
     log_file = log_dir / f"{app_name}_{timestamp}.log"
     
     # Configure root logger
