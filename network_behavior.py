@@ -1,13 +1,10 @@
-import requests
 import logging
-import uuid
-import time
-import random
-import hmac
-import hashlib
-import base64
-import json
+from time import time
+from uuid import uuid4
+
+import requests
 from config import PROXY_HOST, PROXY_PORT
+
 logger = logging.getLogger("NetworkBehavior")
 
 class NetworkBehavior:
@@ -31,16 +28,35 @@ class NetworkBehavior:
             "X-Fb-Rmd": "state=URL_ELIGIBLE"}
 
     def _construct_user_agent(self):
-        model = self.fingerprint["ro.product.model"] 
-        return f"Instagram 415.0.0.36.76 Android (30/11; 440dpi; 1080x2340; Google/exclude; {model}; generic_x86_64_arm64; ranchu; en_US; 874816550)"
+        release = self.fingerprint.get("build_release", "11")
+        density = int(self.fingerprint.get("display_density", 420))
+        resolution = self.fingerprint.get("display_resolution", "1080x2400")
+        brand = self.fingerprint.get("ro.product.brand", "google")
+        product_name = self.fingerprint.get("ro.product.name", "oriole")
+        model = self.fingerprint.get("ro.product.model", "Pixel 6")
+        device = self.fingerprint.get("ro.product.device", "oriole")
+        version_code = self.fingerprint.get("build_incremental", "874816550")
+        return (
+            "Instagram 415.0.0.36.76 Android "
+            f"(30/{release}; {density}dpi; {resolution}; "
+            f"{brand}/{product_name}; {model}; {device}; qcom; en_US; {version_code})"
+        )
 
     def _get_common_headers(self):
         headers = self.base_headers.copy()
-        headers["X-Meta-Usdid"] = str(uuid.uuid4())
-        headers["X-Fb-Conn-Uuid-Client"] = uuid.uuid4().hex
-        headers["X-Pigeon-Rawclienttime"] = str(time.time())
-        headers["X-Pigeon-Session-Id"] = f"UFS-{uuid.uuid4()}-1"
+        headers["X-Meta-Usdid"] = str(uuid4())
+        headers["X-Fb-Conn-Uuid-Client"] = uuid4().hex
+        headers["X-Pigeon-Rawclienttime"] = str(time())
+        headers["X-Pigeon-Session-Id"] = f"UFS-{uuid4()}-1"
         return headers
+
+    def _post(self, url, headers, data, timeout, description, verify=True):
+        try:
+            resp = self.session.post(url, headers=headers, data=data, timeout=timeout, verify=verify)
+            resp.raise_for_status()
+            logger.info(f"{description} status: {resp.status_code}")
+        except requests.RequestException as e:
+            raise Exception(f"{description} failed: {e}") from e
 
     def send_pigeon_log(self, event_name="app_start"):
         url = "https://graph.instagram.com/pigeon_nest"
@@ -56,14 +72,8 @@ class NetworkBehavior:
             "Content-Type: application/octet-stream\r\n\r\n"
             "\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x00\x03\xcb\x4b\xcd\x2b\x29\x67\x60\x60\x60\x00\x00\x2d\x3a\x07\x3a\x09\x00\x00\x00" 
             "\r\n--boundary123--\r\n")
-        try:
-            logger.info(f"📡 Sending Pigeon Log ({event_name})...")
-            resp = self.session.post(url, headers=headers, data=body, timeout=10, verify=False) # verify=False for Charles/Burp if needed, else True
-            logger.info(f"  ✓ Pigeon Response: {resp.status_code}")
-            return True
-        except Exception as e:
-            logger.warning(f"  ⚠️ Pigeon Log Failed: {e}")
-            return False
+        logger.info(f"📡 Sending Pigeon Log ({event_name})...")
+        self._post(url, headers, body, timeout=10, description="Pigeon log", verify=False)
 
     def send_launcher_sync(self):
         url = "https://i.instagram.com/api/v1/launcher/sync/"
@@ -73,14 +83,8 @@ class NetworkBehavior:
         data = {
             "configs": "ig_android_launcher_sync_config",
             "id": self.fingerprint["guid"]}
-        try:
-            logger.info("📡 Sending Launcher Sync...")
-            resp = self.session.post(url, headers=headers, data=data, timeout=10)
-            logger.info(f"  ✓ Launcher Response: {resp.status_code}")
-            return True
-        except Exception as e:
-            logger.warning(f"  ⚠️ Launcher Sync Failed: {e}")
-            return False
+        logger.info("📡 Sending Launcher Sync...")
+        self._post(url, headers, data, timeout=10, description="Launcher sync")
 
     def send_prefill_check(self):
         url = "https://i.instagram.com/api/v1/accounts/contact_point_prefill/"
@@ -90,14 +94,8 @@ class NetworkBehavior:
             "phone_id": self.fingerprint["phone_id"],
             "_uuid": self.fingerprint["guid"],
             "usage": "prefill"}
-        try:
-            logger.info("📡 Sending Contact Prefill Check...")
-            resp = self.session.post(url, headers=headers, data=data, timeout=10)
-            logger.info(f"  ✓ Prefill Response: {resp.status_code}")
-            return True
-        except Exception as e:
-            logger.warning(f"  ⚠️ Prefill Check Failed: {e}")
-            return False
+        logger.info("📡 Sending Contact Prefill Check...")
+        self._post(url, headers, data, timeout=10, description="Contact prefill check")
 
     def send_qe_sync(self):
         url = "https://i.instagram.com/api/v1/qe/sync/"
@@ -106,23 +104,17 @@ class NetworkBehavior:
         data = {
             "id": self.fingerprint["guid"],
             "experiments": "ig_android_growth_fx_refactor"}
-        try:
-            logger.info("📡 Sending QE Sync...")
-            resp = self.session.post(url, headers=headers, data=data, timeout=10)
-            logger.info(f"  ✓ QE Sync Response: {resp.status_code}")
-            return True
-        except Exception as e:
-            logger.warning(f"  ⚠️ QE Sync Failed: {e}")
-            return False
+        logger.info("📡 Sending QE Sync...")
+        self._post(url, headers, data, timeout=10, description="QE sync")
 
     def send_mock_browser_request(self):
         try:
             logger.info("🌍 Sending Browser Connectivity Check...")
             headers = {
                 "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.104 Mobile Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
-            }
-            self.session.get("https://www.instagram.com/", headers=headers, timeout=10)
-            logger.info("  ✓ Browser Check OK")
-        except:
-            pass
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"}
+            resp = self.session.get("https://www.instagram.com/", headers=headers, timeout=10)
+            resp.raise_for_status()
+            logger.info(f"Browser check status: {resp.status_code}")
+        except requests.RequestException as e:
+            raise Exception(f"Browser connectivity check failed: {e}") from e

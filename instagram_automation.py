@@ -1,9 +1,9 @@
-import time
 import random
 import logging
 import subprocess
-import os
-from config import ADB_BIN, UI_ELEMENT_TIMEOUT
+from time import sleep
+import names
+from config import ADB_BIN
 from human_behavior import HumanBehavior
 from network_behavior import NetworkBehavior
 
@@ -24,13 +24,13 @@ class InstagramSignUpFlow:
             logger.info("🌍 Sending Pre-Start Network Traffic...")
             self.network.send_pigeon_log("app_start") 
             self.network.send_launcher_sync()
-            time.sleep(1.0)
+            sleep(1.0)
             self._onboarding_phase()
             self._email_phase()
             logger.info("🌍 Sending Background Checks...")
             self.network.send_prefill_check()
             self.network.send_pigeon_log("verification_attempt")
-            time.sleep(0.5)
+            sleep(0.5)
             self._verification_code_phase()
             self._password_phase()
             self._dob_phase()
@@ -39,10 +39,9 @@ class InstagramSignUpFlow:
             logger.info("🌍 Sending Final Config Sync...")
             self.network.send_qe_sync()
             self.network.send_mock_browser_request()
-            time.sleep(1.0)
+            sleep(1.0)
             self._terms_phase()
             logger.info("✅ ABSOLUTE VICTORY: Account Successfully Created!")
-            return True
         except Exception as e:
             logger.error(f"❌ Automation Failed: {e}")
             raise
@@ -73,7 +72,7 @@ class InstagramSignUpFlow:
         logger.info("\n[PHASE 3] VERIFICATION CODE")
         self.human.minimize_check_notifications(self.device_mgr, ADB_BIN)
         code = input("  🔐 Enter verification code: ")
-        self.device_mgr.click_text(self.driver, "Confirmation code", exact=True, timeout=10)
+        self._click_human("Confirmation code", exact=True, timeout=10)
         self.human.read_time_behavior(0.5)
         self.human.type_with_typos(ADB_BIN, code, field_type="code")
         self.human.deliberate_next_click(self.device_mgr, self.driver)
@@ -100,7 +99,6 @@ class InstagramSignUpFlow:
 
     def _fullname_phase(self):
         logger.info("\n[PHASE 6] FULL NAME")
-        import names
         full_name = names.get_full_name()
         logger.info(f"  Chosen Name: {full_name}")
         self._click_human("Full name", exact=True, timeout=10)
@@ -124,11 +122,11 @@ class InstagramSignUpFlow:
             if random.random() < 0.35:
                 link = random.choice(links)
                 logger.info(f"  📖 Reading '{link}' (simulated interest)...")
-                if self.device_mgr.click_text(self.driver, link, exact=True, timeout=5):
-                    self.human.read_time_behavior(random.gauss(6, 2))
-                    logger.info("  Returning to terms...")
-                    subprocess.run([str(ADB_BIN), "shell", "input", "keyevent", "4"], check=False)
-                    self.human.read_time_behavior(2.0)
+                self._click_human(link, exact=True, timeout=5)
+                self.human.read_time_behavior(random.gauss(6, 2))
+                logger.info("  Returning to terms...")
+                subprocess.run([str(ADB_BIN), "shell", "input", "keyevent", "4"], check=False)
+                self.human.read_time_behavior(2.0)
         except Exception as e:
             logger.warning(f"  Failed to read policy link: {e}")
 
@@ -136,10 +134,14 @@ class InstagramSignUpFlow:
         self._click_human("I agree", exact=True, timeout=30)
 
     def _click_human(self, text, exact=False, timeout=15):
+        last_error = None
         for i in range(3):
-            if self.device_mgr.click_text(self.driver, text, exact=exact, timeout=timeout):
+            try:
+                self.device_mgr.click_text(self.driver, text, exact=exact, timeout=timeout)
                 logger.info(f"  ✓ Clicked '{text}'")
-                return True
-            logger.warning(f"  ⚠️ Couldn't find '{text}', retrying ({i+1}/3)...")
-            time.sleep(2)
-        raise Exception(f"Failed to click '{text}' after 3 attempts")
+                return
+            except Exception as e:
+                last_error = e
+                logger.warning(f"  ⚠️ Couldn't find '{text}', retrying ({i + 1}/3)...")
+                sleep(2)
+        raise Exception(f"Failed to click '{text}' after 3 attempts: {last_error}")

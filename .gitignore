@@ -2,6 +2,7 @@
 /bin/split_config.xxhdpi.apk
 /bin/dummy_photo.jpg
 /bin/wireproxy
+/.env
 /venv
 *.log
 /__pycache__
