@@ -1,0 +1,20 @@
+{
+  "timestamp": "20260224_175953",
+  "container": "redroid_0",
+  "boot_time_seconds": 29.2,
+  "identity_injection_enabled": true,
+  "strict_verify": true,
+  "fingerprint": {
+    "manufacturer": "Xiaomi",
+    "brand": "Xiaomi",
+    "model": "M2011K2C",
+    "name": "venus",
+    "device": "venus",
+    "serial": "1ZVQY84NFHO7",
+    "build_id": "RQ3A.215537.002",
+    "build_fingerprint": "Xiaomi/venus/venus:11/RQ3A.215537.002/713467333:user/release-keys",
+    "android_id": "31d2bf588e586b72",
+    "mac_address": "0e:1e:bc:e5:93:e4",
+    "imei": "123003876223450"
+  }
+}

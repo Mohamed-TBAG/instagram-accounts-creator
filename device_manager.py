@@ -1,10 +1,12 @@
 import os
+import json
 import shutil
 import subprocess
 import random
 import re
 import logging
 import uuid
+from datetime import datetime
 from time import sleep, time
 from pathlib import Path
 from urllib.request import urlopen
@@ -18,12 +20,12 @@ from selenium.webdriver.common.actions import interaction
 from selenium.webdriver.common.actions.action_builder import ActionBuilder
 from selenium.webdriver.common.actions.pointer_input import PointerInput
 from config import (
-    PROJECT_BIN, ADB_BIN,
+    PROJECT_BIN, LOG_DIR, ADB_BIN,
     APPIUM_SERVER_URL, INSTAGRAM_PACKAGE, GALLERY_PHOTO_DEST,
     DEVICE_PROXY_ADDRESS, UI_ELEMENT_TIMEOUT,
     ADB_DEFAULT_TIMEOUT, BOOT_TIMEOUT, APPIUM_CONNECT_TIMEOUT,
     REDROID_IMAGE, REDROID_GPU_MODE, REDROID_WIDTH, REDROID_HEIGHT, REDROID_FPS,
-    REDROID_USE_PROP_MOUNTS,
+    REDROID_USE_PROP_MOUNTS, REDROID_AUDIT_ENABLED, REDROID_VERIFY_STRICT,
     DEVICE_PROFILES)
 logger = logging.getLogger("DeviceManager")
 
@@ -33,7 +35,7 @@ class DeviceManager:
         self.adb_port = 5555
         self.fingerprint = None
         self.previous_fingerprint = None
-        self.prop_mounts = []
+        self._boot_start_time = None
         if not ADB_BIN.exists():
             logger.error(f"ADB binary not found at {ADB_BIN}")
             raise FileNotFoundError(f"ADB binary not found at {ADB_BIN}")
@@ -76,40 +78,6 @@ class DeviceManager:
             raise ValueError(f"Invalid container name '{name}'")
         if not isinstance(port, int) or not (1 <= port <= 65535):
             raise ValueError(f"Invalid host ADB port '{port}'")
-
-    def _to_bool(self, raw, name):
-        value = (raw or "").strip().lower()
-        if value in {"1", "true", "yes", "on"}:
-            return True
-        if value in {"0", "false", "no", "off"}:
-            return False
-        raise ValueError(f"{name} must be boolean-like, got '{raw}'")
-
-    def _read_dotenv_value(self, key):
-        dotenv = Path(".env")
-        if not dotenv.exists():
-            return None
-        for raw_line in dotenv.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            env_key, env_value = line.split("=", 1)
-            if env_key.strip() != key:
-                continue
-            value = env_value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-                value = value[1:-1]
-            return value
-        return None
-
-    def _resolve_use_prop_mounts(self):
-        dotenv_raw = self._read_dotenv_value("REDROID_USE_PROP_MOUNTS")
-        if dotenv_raw is not None and dotenv_raw.strip() != "":
-            return self._to_bool(dotenv_raw, "REDROID_USE_PROP_MOUNTS")
-        env_raw = os.getenv("REDROID_USE_PROP_MOUNTS")
-        if env_raw is not None and env_raw.strip() != "":
-            return self._to_bool(env_raw, "REDROID_USE_PROP_MOUNTS")
-        return REDROID_USE_PROP_MOUNTS
 
     def generate_random_identity(self):
         profile = random.choice(DEVICE_PROFILES)
@@ -201,7 +169,6 @@ class DeviceManager:
             pass
 
     def kill_emulator(self, name="redroid_0"):
-        # logger.info(f"Stopping ReDroid container: {name}")
         try:
             subprocess.run(["docker", "stop", name], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run([str(ADB_BIN), "disconnect", f"localhost:{self.adb_port}"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -210,7 +177,6 @@ class DeviceManager:
         sleep(1)
 
     def kill_all_emulators(self):
-        """Forcefully removes all stopped or running Redroid containers from the host."""
         logger.info("🔪 Wiping all background Redroid containers...")
         try:
             cmd = "docker rm -f $(docker ps -aq -f ancestor=redroid/redroid:11.0.0-latest)"
@@ -218,102 +184,56 @@ class DeviceManager:
         except Exception as e:
             logger.error(f"Error wiping orphan containers: {e}")
 
-    def _generate_prop_files(self, name, fingerprint):
-        """Generates custom build.prop files for the container."""
-        template_dir = Path("templates")
-        if not template_dir.exists():
-            logger.warning("Templates dir not found, skipping build.prop mount.")
-            return []
-        out_dir = Path("temp_props") / name
-        if out_dir.exists():
-            shutil.rmtree(out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        files = ["system_build.prop", "vendor_build.prop", "product_build.prop"]
-        mounts = []
-        build_fp = fingerprint["build_fingerprint"]
-        desc = (
-            f"{fingerprint['ro.product.name']}-user {fingerprint['build_release']} "
-            f"{fingerprint['build_id']} {fingerprint['build_incremental']} release-keys"
-        )
-        replacements = {
-            "ro.product.model": fingerprint["ro.product.model"],
-            "ro.product.brand": fingerprint["ro.product.brand"],
-            "ro.product.manufacturer": fingerprint["ro.product.manufacturer"],
-            "ro.product.name": fingerprint["ro.product.name"],
-            "ro.product.device": fingerprint["ro.product.device"],
-            "ro.serialno": fingerprint["ro.serialno"],
-            "ro.build.fingerprint": build_fp,
-            "ro.system.build.fingerprint": build_fp,
-            "ro.vendor.build.fingerprint": build_fp,
-            "ro.product.build.fingerprint": build_fp,
-            "ro.bootimage.build.fingerprint": build_fp,
-            "ro.build.version.release": fingerprint["build_release"],
-            "ro.system.build.version.release": fingerprint["build_release"],
-            "ro.vendor.build.version.release": fingerprint["build_release"],
-            "ro.product.build.version.release": fingerprint["build_release"],
-            "ro.build.version.incremental": fingerprint["build_incremental"],
-            "ro.system.build.version.incremental": fingerprint["build_incremental"],
-            "ro.vendor.build.version.incremental": fingerprint["build_incremental"],
-            "ro.product.build.version.incremental": fingerprint["build_incremental"],
-            "ro.build.version.security_patch": fingerprint["build_security_patch"],
-            "ro.system.build.version.security_patch": fingerprint["build_security_patch"],
-            "ro.vendor.build.security_patch": fingerprint["build_security_patch"],
-            "ro.product.build.version.security_patch": fingerprint["build_security_patch"],
-            "ro.build.id": fingerprint["build_id"],
-            "ro.system.build.id": fingerprint["build_id"],
-            "ro.vendor.build.id": fingerprint["build_id"],
-            "ro.product.build.id": fingerprint["build_id"],
-            "ro.build.display.id": desc,
-            "ro.build.product": fingerprint["ro.product.device"],
-            "ro.build.description": desc,
-            "ro.system_ext.build.fingerprint": build_fp,
-            "ro.product.system.model": fingerprint["ro.product.model"],
-            "ro.product.system.brand": fingerprint["ro.product.brand"],
-            "ro.product.system.manufacturer": fingerprint["ro.product.manufacturer"],
-            "ro.product.system.name": fingerprint["ro.product.name"],
-            "ro.product.system.device": fingerprint["ro.product.device"],
-            "ro.product.system_ext.model": fingerprint["ro.product.model"],
-            "ro.product.system_ext.brand": fingerprint["ro.product.brand"],
-            "ro.product.system_ext.manufacturer": fingerprint["ro.product.manufacturer"],
-            "ro.product.system_ext.name": fingerprint["ro.product.name"],
-            "ro.product.system_ext.device": fingerprint["ro.product.device"],
-            "ro.product.vendor.model": fingerprint["ro.product.model"],
-            "ro.product.vendor.brand": fingerprint["ro.product.brand"],
-            "ro.product.vendor.manufacturer": fingerprint["ro.product.manufacturer"],
-            "ro.product.vendor.name": fingerprint["ro.product.name"],
-            "ro.product.vendor.device": fingerprint["ro.product.device"],
-            "ro.product.product.model": fingerprint["ro.product.model"],
-            "ro.product.product.brand": fingerprint["ro.product.brand"],
-            "ro.product.product.manufacturer": fingerprint["ro.product.manufacturer"],
-            "ro.product.product.name": fingerprint["ro.product.name"],
-            "ro.product.product.device": fingerprint["ro.product.device"]}
-        for fname in files:
-            src = template_dir / fname
-            if not src.exists():
-                 continue
-            dest = out_dir / fname 
-            try:
-                content = src.read_text(encoding="utf-8")
-                new_lines = []
-                for line in content.splitlines():
-                    if "=" in line:
-                        key_part = line.split("=")[0].strip()
-                        if key_part in replacements:
-                            new_lines.append(f"{key_part}={replacements[key_part]}")
-                            continue
-                    new_lines.append(line)
-                dest.write_text("\n".join(new_lines), encoding="utf-8")
-                container_path = "/" + fname.replace("_build.prop", "/build.prop")
-                mounts.extend(["-v", f"{dest.absolute()}:{container_path}"])
-            except Exception as e:
-                logger.error(f"Failed to process template {fname}: {e}")
+    @staticmethod
+    def _prop_val(value: str) -> str:
+        return value.replace(" ", "%20")
 
-        return mounts
-
-    def get_docker_cmd(self, fp, port, name, prop_mounts):
+    def get_docker_cmd(self, fp, port, name):
         gpu_mode = (REDROID_GPU_MODE or "guest").strip().lower()
         if gpu_mode not in {"guest", "host"}:
             gpu_mode = "guest"
+        build_fp = fp["build_fingerprint"]
+        desc = (
+            f"{fp['ro.product.name']}-user {fp['build_release']} "
+            f"{fp['build_id']} {fp['build_incremental']} release-keys")
+        pv = self._prop_val
+        identity_args = [
+            f"ro.product.manufacturer={pv(fp['ro.product.manufacturer'])}",
+            f"ro.product.brand={pv(fp['ro.product.brand'])}",
+            f"ro.product.model={pv(fp['ro.product.model'])}",
+            f"ro.product.name={pv(fp['ro.product.name'])}",
+            f"ro.product.device={pv(fp['ro.product.device'])}",
+            f"ro.product.system.manufacturer={pv(fp['ro.product.manufacturer'])}",
+            f"ro.product.system.brand={pv(fp['ro.product.brand'])}",
+            f"ro.product.system.model={pv(fp['ro.product.model'])}",
+            f"ro.product.system.name={pv(fp['ro.product.name'])}",
+            f"ro.product.system.device={pv(fp['ro.product.device'])}",
+            f"ro.product.vendor.manufacturer={pv(fp['ro.product.manufacturer'])}",
+            f"ro.product.vendor.brand={pv(fp['ro.product.brand'])}",
+            f"ro.product.vendor.model={pv(fp['ro.product.model'])}",
+            f"ro.product.vendor.name={pv(fp['ro.product.name'])}",
+            f"ro.product.vendor.device={pv(fp['ro.product.device'])}",
+            f"ro.product.product.manufacturer={pv(fp['ro.product.manufacturer'])}",
+            f"ro.product.product.brand={pv(fp['ro.product.brand'])}",
+            f"ro.product.product.model={pv(fp['ro.product.model'])}",
+            f"ro.product.product.name={pv(fp['ro.product.name'])}",
+            f"ro.product.product.device={pv(fp['ro.product.device'])}",
+            f"androidboot.serialno={fp['ro.serialno']}",
+            f"ro.build.fingerprint={pv(build_fp)}",
+            f"ro.system.build.fingerprint={pv(build_fp)}",
+            f"ro.vendor.build.fingerprint={pv(build_fp)}",
+            f"ro.product.build.fingerprint={pv(build_fp)}",
+            f"ro.bootimage.build.fingerprint={pv(build_fp)}",
+            f"ro.build.version.release={pv(fp['build_release'])}",
+            f"ro.build.id={pv(fp['build_id'])}",
+            f"ro.build.version.incremental={pv(fp['build_incremental'])}",
+            f"ro.build.version.security_patch={pv(fp['build_security_patch'])}",
+            f"ro.build.description={pv(desc)}",
+            f"ro.build.display.id={pv(desc)}",
+            "ro.build.type=user",
+            "ro.build.tags=release-keys",
+        ] if REDROID_USE_PROP_MOUNTS else []
+
         boot_args = [
             f"androidboot.redroid_width={REDROID_WIDTH}",
             f"androidboot.redroid_height={REDROID_HEIGHT}",
@@ -321,16 +241,16 @@ class DeviceManager:
             f"androidboot.redroid_gpu_mode={gpu_mode}",
             "androidboot.use_memfd=1",
             "debug.sf.nobootanimation=1",
+            *identity_args,
         ]
         return [
             "docker", "run", "-d", "--rm", "--privileged",
             "--name", name,
             "--pull", "never",
-            "-v", "/dev/binderfs:/dev/binderfs", 
+            "-v", "/dev/binderfs:/dev/binderfs",
             "--tmpfs", "/data:rw,exec,suid",
             f"--mac-address={fp['wifi.mac.address']}",
             "-p", f"{port}:5555",
-            *prop_mounts,
             REDROID_IMAGE,
             *boot_args
         ]
@@ -341,48 +261,33 @@ class DeviceManager:
         self.adb_port = port
         addr = f"localhost:{port}"
         logger.info(f"Starting Redroid Container: {name} on port {port}")
-        use_prop_mounts = self._resolve_use_prop_mounts()
-        logger.info(f"Effective REDROID_USE_PROP_MOUNTS={int(use_prop_mounts)}")
+        logger.info(f"  Identity injection via androidboot.*: {'enabled' if REDROID_USE_PROP_MOUNTS else 'disabled (baseline mode)'}")
         self._preflight_docker()
         self._assert_binderfs()
         fp = self.generate_random_identity()
-        candidate_mounts = []
-        if use_prop_mounts:
-            generated_mounts = self._generate_prop_files(name, fp)
-            if generated_mounts:
-                candidate_mounts.append(("fingerprint_mounts", generated_mounts))
-            else:
-                logger.warning("No build.prop mounts generated; continuing with baseline startup")
-        candidate_mounts.append(("baseline", []))
-        boot_errors = []
-        selected_mounts = []
-        long_boot_timeout = max(BOOT_TIMEOUT, 90)
-        fast_boot_timeout = min(long_boot_timeout, 120)
-        for mode, mounts in candidate_mounts:
-            logger.info(f"Startup mode: {mode}")
+        self.kill_emulator(name)
+        subprocess.run([str(ADB_BIN), "disconnect", addr], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        boot_timeout = max(BOOT_TIMEOUT, 60)
+        self._boot_start_time = time()
+        try:
+            cmd = self.get_docker_cmd(fp, port, name)
+            proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            if proc.stdout.strip():
+                logger.info(f"  Container started: {proc.stdout.strip()[:72]}")
+            self._assert_container_running(name)
+            logger.info("  ⏳ Container started. Waiting for Android boot...")
+            self.wait_for_adb(port, timeout=boot_timeout, name=name)
+        except Exception as e:
+            logs = self._get_container_logs(name)
             self.kill_emulator(name)
-            subprocess.run([str(ADB_BIN), "disconnect", addr], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            try:
-                cmd = self.get_docker_cmd(fp, port, name, mounts)
-                proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
-                if proc.stdout.strip():
-                    logger.info(f"Container started: {proc.stdout.strip()}")
-                self._assert_container_running(name)
-                logger.info("  ⏳ Container started. Waiting for Android boot...")
-                boot_timeout = fast_boot_timeout if mode == "fingerprint_mounts" else long_boot_timeout
-                self.wait_for_adb(port, timeout=boot_timeout, name=name)
-                selected_mounts = mounts
-                break
-            except Exception as e:
-                logs = self._get_container_logs(name)
-                boot_errors.append(f"{mode}: {e} logs_tail='{logs}'")
-                self.kill_emulator(name)
-        else:
-            details = " | ".join(boot_errors)
-            raise Exception(f"Failed to boot ReDroid after all startup modes: {details}")
-        self.prop_mounts = selected_mounts
+            raise Exception(f"Failed to boot ReDroid: {e} | logs_tail='{logs}'") from e
+        boot_elapsed = round(time() - self._boot_start_time, 1)
+        logger.info(f"  🕐 Boot completed in {boot_elapsed}s")
         self._apply_post_boot_identity(fp)
-        self._verify_identity(fp, strict_props=bool(selected_mounts))
+        if REDROID_AUDIT_ENABLED:
+            self._dump_fingerprint_audit(name)
+        self._verify_identity(fp)
+        self._save_identity_report(fp, name, boot_elapsed)
         logger.info("  ✅ Redroid is Online!")
 
     def _preflight_docker(self):
@@ -503,55 +408,108 @@ class DeviceManager:
             return ""
         return ""
 
-    def _verify_identity(self, fp, strict_props=True):
-        expected_to_actual = {
-            "ro.product.manufacturer": self._read_prop("ro.product.manufacturer"),
-            "ro.product.brand": self._read_prop("ro.product.brand"),
-            "ro.product.model": self._read_prop("ro.product.model"),
-            "ro.product.name": self._read_prop("ro.product.name"),
-            "ro.product.device": self._read_prop("ro.product.device"),
-            "ro.serialno": self._read_prop("ro.serialno"),
-            "ro.boot.serialno": self._read_prop("ro.boot.serialno"),
-            "ro.build.fingerprint": self._read_prop("ro.build.fingerprint"),
-        }
+    def _read_shell(self, *args, timeout=10):
+        try:
+            proc = self._adb("shell", *args, capture_output=True, text=True, timeout=timeout)
+            if proc.returncode == 0:
+                return (proc.stdout or "").strip()
+        except Exception:
+            pass
+        return ""
+
+    def _dump_fingerprint_audit(self, name):
+        audit_dir = LOG_DIR / "fingerprint_audit"
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        audit_file = audit_dir / f"{ts}_{name}.txt"
+        lines = [f"=== Fingerprint Audit: {name} @ {ts} ==="]
+        lines.append("\n--- getprop (all) ---")
+        lines.append(self._read_shell("getprop") or "(empty)")
+        lines.append("\n--- android_id (secure) ---")
+        lines.append(self._read_setting("secure", "android_id") or "(empty)")
+        lines.append("\n--- /sys/class/net/eth0/address ---")
+        lines.append(self._read_shell("cat", "/sys/class/net/eth0/address") or "(empty)")
+        lines.append("\n--- /proc/version ---")
+        lines.append(self._read_shell("cat", "/proc/version") or "(empty)")
+        lines.append("\n--- /proc/cpuinfo (first 20 lines) ---")
+        cpuinfo = self._read_shell("cat", "/proc/cpuinfo")
+        lines.append("\n".join(cpuinfo.splitlines()[:20]) if cpuinfo else "(empty)")
+        try:
+            audit_file.write_text("\n".join(lines), encoding="utf-8")
+            logger.info(f"  📋 Fingerprint audit saved: {audit_file}")
+        except Exception as e:
+            logger.warning(f"Could not write fingerprint audit: {e}")
+
+    def _verify_identity(self, fp):
+        strict = REDROID_VERIFY_STRICT and REDROID_USE_PROP_MOUNTS
+        prop_checks = {
+            "ro.product.manufacturer": fp["ro.product.manufacturer"],
+            "ro.product.brand":        fp["ro.product.brand"],
+            "ro.product.model":        fp["ro.product.model"],
+            "ro.product.name":         fp["ro.product.name"],
+            "ro.product.device":       fp["ro.product.device"],
+            "ro.serialno":             fp["ro.serialno"],
+            "ro.build.fingerprint":    fp["build_fingerprint"],}
+        mismatches = []
+        actuals = {}
+        for key, expected in prop_checks.items():
+            actual = self._read_prop(key)
+            actual_norm   = actual.replace("%20", " ").strip()
+            expected_norm = expected.replace("%20", " ").strip()
+            actuals[key] = actual_norm
+            if strict and expected_norm and actual_norm and expected_norm != actual_norm:
+                mismatches.append((key, expected_norm, actual_norm))
         android_id_actual = self._read_setting("secure", "android_id")
         mac_actual = self._read_eth_mac()
-        mismatches = []
-        required_keys = [
-            "ro.product.manufacturer",
-            "ro.product.brand",
-            "ro.product.model",
-            "ro.product.name",
-            "ro.product.device",
-            "ro.build.fingerprint",
-        ]
-        for key, actual in expected_to_actual.items():
-            expected = fp["build_fingerprint"] if key == "ro.build.fingerprint" else fp.get(key, "")
-            if strict_props and expected and actual and expected != actual:
-                mismatches.append((key, expected, actual))
         if fp.get("android_id") and android_id_actual and fp["android_id"] != android_id_actual:
             mismatches.append(("android_id", fp["android_id"], android_id_actual))
-        if strict_props and fp.get("wifi.mac.address") and mac_actual and fp["wifi.mac.address"].lower() != mac_actual:
-            mismatches.append(("wifi.mac.address", fp["wifi.mac.address"].lower(), mac_actual))
-        critical_mismatches = [m for m in mismatches if (m[0] in required_keys and strict_props) or m[0] == "android_id"]
-        if strict_props:
-            for key in required_keys:
-                if not expected_to_actual.get(key):
-                    raise Exception(f"Identity verification failed: missing value for {key}")
-        if critical_mismatches:
-            text = "; ".join(f"{k}: expected '{e}' got '{a}'" for k, e, a in critical_mismatches)
+        if mismatches:
+            text = "; ".join(f"{k}: expected '{e}' got '{a}'" for k, e, a in mismatches)
             raise Exception(f"Identity verification failed: {text}")
         logger.info(
-            "Identity verified: "
-            f"manufacturer={expected_to_actual['ro.product.manufacturer']}, "
-            f"brand={expected_to_actual['ro.product.brand']}, "
-            f"model={expected_to_actual['ro.product.model']}, "
-            f"device={expected_to_actual['ro.product.device']}, "
-            f"serial={expected_to_actual['ro.serialno']}, "
-            f"fingerprint={expected_to_actual['ro.build.fingerprint']}, "
+            "  ✅ Identity verified: "
+            f"manufacturer={actuals.get('ro.product.manufacturer')}, "
+            f"brand={actuals.get('ro.product.brand')}, "
+            f"model={actuals.get('ro.product.model')}, "
+            f"device={actuals.get('ro.product.device')}, "
+            f"serial={actuals.get('ro.serialno')}, "
+            f"fingerprint={actuals.get('ro.build.fingerprint')}, "
             f"android_id={android_id_actual}, "
-            f"mac={mac_actual or fp['wifi.mac.address'].lower()}"
-        )
+            f"mac(eth0)={mac_actual or '(unread)'}")
+        abi = self._read_prop("ro.product.cpu.abi")
+        hw  = self._read_prop("ro.hardware")
+        logger.info(f"  ℹ️  Immutable (host) surfaces — cpu.abi={abi}, ro.hardware={hw} [cannot be spoofed on x86 host]")
+
+    def _save_identity_report(self, fp, name, boot_elapsed):
+        report_dir = LOG_DIR / "identity_reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_file = report_dir / f"{ts}_{name}.json"
+        report = {
+            "timestamp": ts,
+            "container": name,
+            "boot_time_seconds": boot_elapsed,
+            "identity_injection_enabled": REDROID_USE_PROP_MOUNTS,
+            "strict_verify": REDROID_VERIFY_STRICT,
+            "fingerprint": {
+                "manufacturer": fp.get("ro.product.manufacturer"),
+                "brand":        fp.get("ro.product.brand"),
+                "model":        fp.get("ro.product.model"),
+                "name":         fp.get("ro.product.name"),
+                "device":       fp.get("ro.product.device"),
+                "serial":       fp.get("ro.serialno"),
+                "build_id":     fp.get("build_id"),
+                "build_fingerprint": fp.get("build_fingerprint"),
+                "android_id":   fp.get("android_id"),
+                "mac_address":  fp.get("wifi.mac.address"),
+                "imei":         fp.get("hw.gsmModem.imei"),
+            },
+        }
+        try:
+            report_file.write_text(json.dumps(report, indent=2), encoding="utf-8")
+            logger.info(f"  📄 Identity report saved: {report_file}")
+        except Exception as e:
+            logger.warning(f"Could not write identity report: {e}")
     
     def apply_proxy(self):
         self._adb("shell", "settings", "put", "global", "http_proxy", DEVICE_PROXY_ADDRESS, check=True, timeout=30)
