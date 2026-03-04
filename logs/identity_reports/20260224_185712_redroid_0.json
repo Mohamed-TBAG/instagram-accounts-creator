@@ -1,0 +1,22 @@
+{
+  "timestamp": "20260224_185712",
+  "container": "redroid_0",
+  "boot_time_seconds": 25.7,
+  "identity_injection_enabled": true,
+  "strict_verify": true,
+  "fingerprint": {
+    "manufacturer": "OPPO",
+    "brand": "OPPO",
+    "model": "CPH2251",
+    "name": "RENO6",
+    "device": "RENO6",
+    "serial": "C861WRPPA16L",
+    "build_id": "RQ3A.213925.007",
+    "build_fingerprint": "OPPO/RENO6/RENO6:11/RQ3A.213925.007/614672582:user/release-keys",
+    "android_id": "1ccbd31eeb9faf14",
+    "mac_address": "06:46:df:a9:11:19",
+    "imei": "984031855092867",
+    "timezone": "Asia/Jakarta",
+    "locale": "th-TH"
+  }
+}

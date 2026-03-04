@@ -1,0 +1,22 @@
+{
+  "session_id": "i0_2b88066ce8",
+  "container_name": "redroid_i0_2b88066ce8",
+  "adb_port": 5555,
+  "timestamp": "2026-03-04T20:52:52.207470",
+  "boot_seconds": 36.1,
+  "identity": {
+    "manufacturer": "Google",
+    "brand": "google",
+    "model": "Pixel 6",
+    "device": "oriole",
+    "serial": "BC7HUADN4KFD",
+    "android_id": "4394b41893e77a35",
+    "wifi_mac": "02:26:d5:9f:02:e1",
+    "bt_mac": "ee:11:f3:4a:bf:b3",
+    "imei": "219384559161208",
+    "build_fingerprint": "google/oriole/oriole:11/RQ3A.219402.002/895559703:user/release-keys",
+    "timezone": "Europe/Paris",
+    "locale": "en-US",
+    "display": "1080x2400"
+  }
+}

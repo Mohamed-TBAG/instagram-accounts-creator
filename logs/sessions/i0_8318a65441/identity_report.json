@@ -1,0 +1,22 @@
+{
+  "session_id": "i0_8318a65441",
+  "container_name": "redroid_i0_8318a65441",
+  "adb_port": 5567,
+  "timestamp": "2026-03-04T20:20:47.369189",
+  "boot_seconds": 20.1,
+  "identity": {
+    "manufacturer": "Samsung",
+    "brand": "samsung",
+    "model": "SM-S901B",
+    "device": "r0q",
+    "serial": "A8UMRI0XHEYJ",
+    "android_id": "f031a099c0110174",
+    "wifi_mac": "2e:c8:e6:4d:2a:45",
+    "bt_mac": "02:ce:13:ef:eb:97",
+    "imei": "989804708991476",
+    "build_fingerprint": "samsung/r0qxx/r0q:11/RQ3A.218496.009/953921777:user/release-keys",
+    "timezone": "Europe/Istanbul",
+    "locale": "ar-SA",
+    "display": "1080x2340"
+  }
+}

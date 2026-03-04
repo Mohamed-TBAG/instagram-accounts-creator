@@ -6,6 +6,7 @@ import names
 from config import ADB_BIN
 from human_behavior import HumanBehavior
 from network_behavior import NetworkBehavior
+from email_client import EmailClient
 
 logger = logging.getLogger("InstagramAutomation")
 
@@ -16,35 +17,33 @@ class InstagramSignUpFlow:
         self.driver = driver
         self.human = HumanBehavior()
         self.network = NetworkBehavior(device_mgr)
+        self.email_client = EmailClient()
+        self.email_address = None
         self.password = "Pp66778899"
 
     def run(self):
         logger.info(">>> 🤖 STARTING INSTAGRAM AUTOMATION WITH HUMAN BEHAVIOR <<<")
-        try:
-            logger.info("🌍 Sending Pre-Start Network Traffic...")
-            self.network.send_pigeon_log("app_start") 
-            self.network.send_launcher_sync()
-            sleep(1.0)
-            self._onboarding_phase()
-            self._email_phase()
-            logger.info("🌍 Sending Background Checks...")
-            self.network.send_prefill_check()
-            self.network.send_pigeon_log("verification_attempt")
-            sleep(0.5)
-            self._verification_code_phase()
-            self._password_phase()
-            self._dob_phase()
-            self._fullname_phase()
-            self._username_phase()
-            logger.info("🌍 Sending Final Config Sync...")
-            self.network.send_qe_sync()
-            self.network.send_mock_browser_request()
-            sleep(1.0)
-            self._terms_phase()
-            logger.info("✅ ABSOLUTE VICTORY: Account Successfully Created!")
-        except Exception as e:
-            logger.error(f"❌ Automation Failed: {e}")
-            raise
+        logger.info("🌍 Sending Pre-Start Network Traffic...")
+        self.network.send_pigeon_log("app_start") 
+        self.network.send_launcher_sync()
+        sleep(1.0)
+        self._onboarding_phase()
+        self._email_phase()
+        logger.info("🌍 Sending Background Checks...")
+        self.network.send_prefill_check()
+        self.network.send_pigeon_log("verification_attempt")
+        sleep(0.5)
+        self._verification_code_phase()
+        self._password_phase()
+        self._dob_phase()
+        self._fullname_phase()
+        self._username_phase()
+        logger.info("🌍 Sending Final Config Sync...")
+        self.network.send_qe_sync()
+        self.network.send_mock_browser_request()
+        sleep(1.0)
+        self._terms_phase()
+        logger.info("✅ ABSOLUTE VICTORY: Account Successfully Created!")
 
     def _onboarding_phase(self):
         logger.info("\n[PHASE 1] ONBOARDING & MENU NAVIGATION")
@@ -59,11 +58,12 @@ class InstagramSignUpFlow:
 
     def _email_phase(self):
         logger.info("\n[PHASE 2] EMAIL INPUT")
-        email = input("  📧 Enter email address: ")
+        self.email_address = self.email_client.generate_email()
+        logger.info(f"  📧 Using email: {self.email_address}")
         self.device_mgr.minimize_and_restore_app()
         self.human.read_time_behavior(0.8)
         self._click_human("Email", exact=True, timeout=10)
-        self.human.type_with_typos(ADB_BIN, email, field_type="email")
+        self.human.type_with_typos(ADB_BIN, self.email_address, field_type="email")
         self.human.double_check_field(ADB_BIN)
         self.human.deliberate_next_click(self.device_mgr, self.driver)
         self._click_human("Next", exact=True, timeout=10)
@@ -71,7 +71,9 @@ class InstagramSignUpFlow:
     def _verification_code_phase(self):
         logger.info("\n[PHASE 3] VERIFICATION CODE")
         self.human.minimize_check_notifications(self.device_mgr, ADB_BIN)
-        code = input("  🔐 Enter verification code: ")
+        logger.info(f"  ⏳ Waiting for verification code at {self.email_address}...")
+        code = self.email_client.poll_for_code(self.email_address, timeout=90, interval=5.0)
+        logger.info(f"  🔐 Got verification code: {code}")
         self._click_human("Confirmation code", exact=True, timeout=10)
         self.human.read_time_behavior(0.5)
         self.human.type_with_typos(ADB_BIN, code, field_type="code")
@@ -117,31 +119,20 @@ class InstagramSignUpFlow:
     def _terms_phase(self):
         logger.info("\n[PHASE 8] LEGAL & TERMS")
         self.human.scroll_through_terms(self.device_mgr, self.driver)
-        try:
-            links = ["Learn more", "Terms", "Privacy Policy", "Cookies Policy"]
-            if random.random() < 0.35:
-                link = random.choice(links)
-                logger.info(f"  📖 Reading '{link}' (simulated interest)...")
-                self._click_human(link, exact=True, timeout=5)
-                self.human.read_time_behavior(random.gauss(6, 2))
-                logger.info("  Returning to terms...")
-                subprocess.run([str(ADB_BIN), "shell", "input", "keyevent", "4"], check=False)
-                self.human.read_time_behavior(2.0)
-        except Exception as e:
-            logger.warning(f"  Failed to read policy link: {e}")
+        
+        links = ["Learn more", "Terms", "Privacy Policy", "Cookies Policy"]
+        if random.random() < 0.35:
+            link = random.choice(links)
+            logger.info(f"  📖 Reading '{link}' (simulated interest)...")
+            self._click_human(link, exact=True, timeout=5)
+            self.human.read_time_behavior(random.gauss(6, 2))
+            logger.info("  Returning to terms...")
+            subprocess.run([str(ADB_BIN), "shell", "input", "keyevent", "4"], check=False)
+            self.human.read_time_behavior(2.0)
 
         logger.info("  Agreeing to terms...")
         self._click_human("I agree", exact=True, timeout=30)
 
     def _click_human(self, text, exact=False, timeout=15):
-        last_error = None
-        for i in range(3):
-            try:
-                self.device_mgr.click_text(self.driver, text, exact=exact, timeout=timeout)
-                logger.info(f"  ✓ Clicked '{text}'")
-                return
-            except Exception as e:
-                last_error = e
-                logger.warning(f"  ⚠️ Couldn't find '{text}', retrying ({i + 1}/3)...")
-                sleep(2)
-        raise Exception(f"Failed to click '{text}' after 3 attempts: {last_error}")
+        self.device_mgr.click_text(self.driver, text, exact=exact, timeout=timeout)
+        logger.info(f"  ✓ Clicked '{text}'")

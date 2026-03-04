@@ -68,15 +68,14 @@ class HumanBehavior:
         if random.random() < 0.70:
             logger.info("👁️ Human behavior: Verifying password with eye icon...")
             sleep(random.gauss(1.2, 0.4))
-            try:
-                device_mgr.click_text(driver, "Show password", exact=False, timeout=3)
-                logger.info("✓ Password visibility toggled")
-                sleep(random.gauss(1.5, 0.5))
-                device_mgr.click_text(driver, "Show password", exact=False, timeout=3)
-                logger.info("✓ Password hidden again")
-                sleep(random.gauss(0.8, 0.3))
-            except Exception:
-                logger.info("⚠️ Eye icon not found, skipping")
+            
+            device_mgr.click_text(driver, "Show password", exact=False, timeout=3)
+            logger.info("✓ Password visibility toggled")
+            sleep(random.gauss(1.5, 0.5))
+            device_mgr.click_text(driver, "Show password", exact=False, timeout=3)
+            logger.info("✓ Password hidden again")
+            sleep(random.gauss(0.8, 0.3))
+            
     
     @staticmethod
     def scroll_through_terms(device_mgr, driver):
@@ -94,13 +93,9 @@ class HumanBehavior:
     @staticmethod
     def edit_username(device_mgr, driver, adb_bin):
         logger.info("✏️ Human behavior: Editing suggested username...")
-        try:
-            device_mgr.click_text(driver, "Edit", exact=True, timeout=5)
-        except Exception:
-            try:
-                device_mgr.click_text(driver, "Change", exact=False, timeout=5)
-            except Exception as e:
-                raise Exception("Could not find edit button") from e
+        
+        device_mgr.click_text(driver, "Edit", exact=True, timeout=5)
+        
         sleep(random.gauss(1, 0.3))
         subprocess.run([str(adb_bin), "shell", "input", "keyevent", "29"], check=False)  
         sleep(random.gauss(0.3, 0.1))
@@ -177,18 +172,7 @@ class HumanBehavior:
     
     @staticmethod
     def network_retry_behavior(action_func, max_attempts=3, description="Action"):
-        for attempt in range(max_attempts):
-            try:
-                action_func()
-                return
-            except Exception as e:
-                if attempt < max_attempts - 1 and random.random() < 0.03:
-                    retry_delay = random.gauss(2.5, 0.8)
-                    logger.warning(f"⚠️ {description} failed, retrying in {retry_delay:.1f}s...")
-                    sleep(retry_delay)
-                    continue
-                raise Exception(f"{description} failed after {attempt + 1}/{max_attempts} attempts: {e}") from e
-        raise Exception(f"{description} failed after {max_attempts} attempts")
+        action_func()
     
     @staticmethod
     def read_time_behavior(seconds=2.0):

@@ -1,7 +1,6 @@
 import logging
 from time import time
 from uuid import uuid4
-
 import requests
 from config import PROXY_HOST, PROXY_PORT
 
@@ -51,12 +50,9 @@ class NetworkBehavior:
         return headers
 
     def _post(self, url, headers, data, timeout, description, verify=True):
-        try:
-            resp = self.session.post(url, headers=headers, data=data, timeout=timeout, verify=verify)
-            resp.raise_for_status()
-            logger.info(f"{description} status: {resp.status_code}")
-        except requests.RequestException as e:
-            raise Exception(f"{description} failed: {e}") from e
+        resp = self.session.post(url, headers=headers, data=data, timeout=timeout, verify=verify)
+        resp.raise_for_status()
+        logger.info(f"{description} status: {resp.status_code}")
 
     def send_pigeon_log(self, event_name="app_start"):
         url = "https://graph.instagram.com/pigeon_nest"
@@ -108,13 +104,10 @@ class NetworkBehavior:
         self._post(url, headers, data, timeout=10, description="QE sync")
 
     def send_mock_browser_request(self):
-        try:
-            logger.info("🌍 Sending Browser Connectivity Check...")
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.104 Mobile Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"}
-            resp = self.session.get("https://www.instagram.com/", headers=headers, timeout=10)
-            resp.raise_for_status()
-            logger.info(f"Browser check status: {resp.status_code}")
-        except requests.RequestException as e:
-            raise Exception(f"Browser connectivity check failed: {e}") from e
+        logger.info("🌍 Sending Browser Connectivity Check...")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.104 Mobile Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"}
+        resp = self.session.get("https://www.instagram.com/", headers=headers, timeout=10)
+        resp.raise_for_status()
+        logger.info(f"Browser check status: {resp.status_code}")

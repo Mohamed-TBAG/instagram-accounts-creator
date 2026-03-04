@@ -1,0 +1,22 @@
+{
+  "session_id": "i0_8c0f0b7bd2",
+  "container_name": "redroid_i0_8c0f0b7bd2",
+  "adb_port": 5555,
+  "timestamp": "2026-03-04T21:26:12.036828",
+  "boot_seconds": 15.0,
+  "identity": {
+    "manufacturer": "OnePlus",
+    "brand": "OnePlus",
+    "model": "LE2115",
+    "device": "OnePlus9",
+    "serial": "B3PCQTLH5BHZ",
+    "android_id": "06ca8b58e7383d57",
+    "wifi_mac": "5e:37:6a:07:a0:4a",
+    "bt_mac": "52:04:c4:fc:84:6e",
+    "imei": "736463831677332",
+    "build_fingerprint": "OnePlus/OnePlus9/OnePlus9:11/RQ3A.219335.007/854489890:user/release-keys",
+    "timezone": "Europe/Amsterdam",
+    "locale": "nl-NL",
+    "display": "1080x2400"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "session_id": "i0_c8ce7eb7af",
+  "container_name": "redroid_i0_c8ce7eb7af",
+  "adb_port": 5555,
+  "timestamp": "2026-03-04T20:25:55.430079",
+  "boot_seconds": 23.2,
+  "identity": {
+    "manufacturer": "OPPO",
+    "brand": "OPPO",
+    "model": "CPH2251",
+    "device": "RENO6",
+    "serial": "I7TP5ZQUFL0T",
+    "android_id": "94403b055f4ae25f",
+    "wifi_mac": "f2:80:2f:64:5d:83",
+    "bt_mac": "72:37:dd:fc:8b:77",
+    "imei": "969238601563864",
+    "build_fingerprint": "OPPO/RENO6/RENO6:11/RQ3A.214125.008/912681455:user/release-keys",
+    "timezone": "Asia/Karachi",
+    "locale": "en-NG",
+    "display": "1080x2400"
+  }
+}

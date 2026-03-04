@@ -93,17 +93,16 @@ APPIUM_SERVER_PORT = _env_int("APPIUM_SERVER_PORT", 4723, 1, 65535)
 APPIUM_SERVER_URL = _env_str("APPIUM_SERVER_URL", f"http://{APPIUM_SERVER_HOST}:{APPIUM_SERVER_PORT}")
 APPIUM_CONNECT_TIMEOUT = _env_int("APPIUM_CONNECT_TIMEOUT", 5, 1, 120)
 
-REDROID_IMAGE = _env_str("REDROID_IMAGE", "redroid/redroid:11.0.0-latest")
+REDROID_IMAGE    = _env_str("REDROID_IMAGE",    "redroid/redroid:11.0.0-latest")
 REDROID_GPU_MODE = _env_str("REDROID_GPU_MODE", "guest").lower()
 REDROID_WIDTH = _env_int("REDROID_WIDTH", 720, 320, 4096)
 REDROID_HEIGHT = _env_int("REDROID_HEIGHT", 1280, 320, 4096)
 REDROID_DPI = _env_int("REDROID_DPI", 320, 120, 640)
 REDROID_FPS = _env_int("REDROID_FPS", 30, 10, 120)
-REDROID_USE_PROP_MOUNTS = _env_bool("REDROID_USE_PROP_MOUNTS", True)
 REDROID_AUDIT_ENABLED   = _env_bool("REDROID_AUDIT_ENABLED", True)
 REDROID_VERIFY_STRICT   = _env_bool("REDROID_VERIFY_STRICT", True)
 
-API_URL = _env_str("API_URL", "http://65.108.211.167:8000/connect")
+API_URL = _env_str("API_URL", "http://65.108.211.167:8080/connect")
 PROXY_HOST = _env_str("PROXY_HOST", "127.0.0.1")
 PROXY_PORT = _env_int("PROXY_PORT", 1080, 1, 65535)
 HTTP_PROXY_PORT = _env_int("HTTP_PROXY_PORT", 1081, 1, 65535)
@@ -134,6 +133,9 @@ DEVICE_PROFILES = [
         "hardware": "gs101",
         "density": 420,
         "resolution": "1080x2400",
+        # Pixel 6 was primarily sold in US/EU — pick from realistic markets
+        "timezones": ["America/New_York", "America/Los_Angeles", "America/Chicago", "Europe/London", "Europe/Paris"],
+        "locales":   ["en-US", "en-GB", "fr-FR", "de-DE"],
     },
     {
         "manufacturer": "Samsung",
@@ -146,6 +148,9 @@ DEVICE_PROFILES = [
         "hardware": "samsungexynos2200",
         "density": 420,
         "resolution": "1080x2340",
+        # SM-S901B (Exynos) is EU/Asia variant
+        "timezones": ["Europe/Berlin", "Europe/Istanbul", "Europe/Warsaw", "Asia/Riyadh", "Africa/Cairo"],
+        "locales":   ["de-DE", "tr-TR", "pl-PL", "ar-SA", "ar-EG"],
     },
     {
         "manufacturer": "OnePlus",
@@ -158,6 +163,9 @@ DEVICE_PROFILES = [
         "hardware": "qcom",
         "density": 402,
         "resolution": "1080x2400",
+        # OnePlus 9 — popular in India, EU, Middle East
+        "timezones": ["Asia/Kolkata", "Asia/Dubai", "Europe/Amsterdam", "Asia/Riyadh"],
+        "locales":   ["en-IN", "ar-AE", "nl-NL", "ar-SA"],
     },
     {
         "manufacturer": "Xiaomi",
@@ -170,6 +178,9 @@ DEVICE_PROFILES = [
         "hardware": "qcom",
         "density": 395,
         "resolution": "1080x2400",
+        # Mi 11 — global, but huge in China, India, EU, Middle East
+        "timezones": ["Asia/Shanghai", "Asia/Kolkata", "Europe/Rome", "Asia/Dubai", "Africa/Cairo"],
+        "locales":   ["zh-CN", "en-IN", "it-IT", "ar-AE", "ar-EG"],
     },
     {
         "manufacturer": "OPPO",
@@ -182,5 +193,8 @@ DEVICE_PROFILES = [
         "hardware": "mt6877",
         "density": 411,
         "resolution": "1080x2400",
+        # OPPO Reno6 — Southeast Asia, Middle East, Africa
+        "timezones": ["Asia/Jakarta", "Asia/Bangkok", "Asia/Karachi", "Africa/Lagos", "Asia/Riyadh"],
+        "locales":   ["id-ID", "th-TH", "ur-PK", "en-NG", "ar-SA"],
     },
 ]

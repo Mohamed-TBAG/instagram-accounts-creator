@@ -1,0 +1,22 @@
+{
+  "session_id": "i0_4245922620",
+  "container_name": "redroid_i0_4245922620",
+  "adb_port": 5555,
+  "timestamp": "2026-03-04T21:18:05.489111",
+  "boot_seconds": 28.6,
+  "identity": {
+    "manufacturer": "Xiaomi",
+    "brand": "Xiaomi",
+    "model": "M2011K2C",
+    "device": "venus",
+    "serial": "Y88OBFCYEYNH",
+    "android_id": "f0a13f53db40d456",
+    "wifi_mac": "02:9a:e9:93:6d:6f",
+    "bt_mac": "7e:b1:30:e1:bb:7e",
+    "imei": "273468546639534",
+    "build_fingerprint": "Xiaomi/venus/venus:11/RQ3A.210857.004/879739129:user/release-keys",
+    "timezone": "Europe/Rome",
+    "locale": "zh-CN",
+    "display": "1080x2400"
+  }
+}
