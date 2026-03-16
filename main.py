@@ -95,7 +95,7 @@ class MainController:
     def _boot_phase(self):
         logger.info("\n[PHASE 2] CONTAINER BOOT")
         meta = self.device_mgr.start_emulator(self.session)
-        # self.device_mgr.apply_proxy(proxy_address=self.proxy_client.session_http_proxy)
+        self.device_mgr.apply_proxy(proxy_address=self.proxy_client.session_http_proxy)
         
         apks = self.device_mgr.get_all_apks()
         if not apks:

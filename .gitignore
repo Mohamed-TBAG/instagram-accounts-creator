@@ -9,3 +9,5 @@
 *.txt
 /tool
 !.env
+/logs/*
+/logs

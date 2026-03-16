@@ -122,7 +122,7 @@ class DeviceManager:
             "build_fingerprint":        build_fp,
             "build_description":        desc,
             "display_density":          int(profile.get("density", 420)),
-            "display_resolution":       profile.get("resolution", "1080x2400"),
+            "display_resolution":       profile.get("resolution", "1080x1920"),
             "timezone":                 timezone,
             "locale":                   locale,
         }
@@ -183,7 +183,7 @@ class DeviceManager:
         gpu_mode = (REDROID_GPU_MODE or "guest").strip().lower()
         if gpu_mode not in {"guest", "host"}:
             gpu_mode = "guest"
-        res = fp.get("display_resolution", "1080x2400")
+        res = fp.get("display_resolution", "1080x1920")
         parts = res.split("x")
         width = int(parts[0]) if len(parts) == 2 else REDROID_WIDTH
         height = int(parts[1]) if len(parts) == 2 else REDROID_HEIGHT
@@ -291,9 +291,17 @@ class DeviceManager:
         subprocess.run([str(ADB_BIN), "connect", addr],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
         while time() < deadline:
-            proc = subprocess.run(
-                [str(ADB_BIN), "-s", addr, "shell", "getprop", "sys.boot_completed"],
-                capture_output=True, text=True, timeout=20)
+            try:
+                proc = subprocess.run(
+                    [str(ADB_BIN), "-s", addr, "shell", "getprop", "sys.boot_completed"],
+                    capture_output=True, text=True, timeout=20)
+            except:
+                try:
+                    subprocess.run([str(ADB_BIN), "connect", addr],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+                except:
+                    continue
+                continue
             if proc.stdout.strip() == "1":
                 logger.info(f"  ✅ {name} boot_completed=1")
                 return
@@ -321,6 +329,8 @@ class DeviceManager:
         timezone = fp.get("timezone", "America/New_York")
         locale = fp.get("locale", "en-US")
         lang, _, region = locale.partition("-")
+        battery_level = random.randint(15, 92)
+        battery_temp = random.randint(280, 390)
         commands = [
             ("shell", "settings", "put", "secure",  "android_id",      fp["android_id"]),
             ("shell", "settings", "put", "global",  "device_name",     fp["ro.product.model"]),
@@ -331,6 +341,10 @@ class DeviceManager:
             ("shell", "setprop",  "persist.sys.locale",   locale),
             ("shell", "setprop",  "persist.sys.language",  lang),
             ("shell", "setprop",  "persist.sys.country",   region),
+            ("shell", "dumpsys",  "battery", "unplug"),
+            ("shell", "dumpsys",  "battery", "set", "level", str(battery_level)),
+            ("shell", "dumpsys",  "battery", "set", "temp", str(battery_temp)),
+            ("shell", "dumpsys",  "battery", "set", "status", "3"),
         ]
         for cmd in commands:
             self._adb(*cmd, check=False, timeout=12)
