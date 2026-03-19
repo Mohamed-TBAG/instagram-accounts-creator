@@ -102,7 +102,7 @@ REDROID_FPS = _env_int("REDROID_FPS", 30, 10, 120)
 REDROID_AUDIT_ENABLED   = _env_bool("REDROID_AUDIT_ENABLED", True)
 REDROID_VERIFY_STRICT   = _env_bool("REDROID_VERIFY_STRICT", True)
 
-API_URL = _env_str("API_URL", "http://65.108.211.167:8080/connect")
+API_URL = _env_str("API_URL", "http://195.138.76.179:8000/connect")
 PROXY_HOST = _env_str("PROXY_HOST", "127.0.0.1")
 PROXY_PORT = _env_int("PROXY_PORT", 1080, 1, 65535)
 HTTP_PROXY_PORT = _env_int("HTTP_PROXY_PORT", 1081, 1, 65535)
@@ -132,7 +132,7 @@ DEVICE_PROFILES = [
         "platform": "gs101",
         "hardware": "gs101",
         "density": 420,
-        "resolution": "1080x2400",
+        "resolution": "1080x1920",
         # Pixel 6 was primarily sold in US/EU — pick from realistic markets
         "timezones": ["America/New_York", "America/Los_Angeles", "America/Chicago", "Europe/London", "Europe/Paris"],
         "locales":   ["en-US", "en-GB", "fr-FR", "de-DE"],
@@ -162,7 +162,7 @@ DEVICE_PROFILES = [
         "platform": "kona",
         "hardware": "qcom",
         "density": 402,
-        "resolution": "1080x2400",
+        "resolution": "1080x1920",
         # OnePlus 9 — popular in India, EU, Middle East
         "timezones": ["Asia/Kolkata", "Asia/Dubai", "Europe/Amsterdam", "Asia/Riyadh"],
         "locales":   ["en-IN", "ar-AE", "nl-NL", "ar-SA"],
@@ -177,7 +177,7 @@ DEVICE_PROFILES = [
         "platform": "lahaina",
         "hardware": "qcom",
         "density": 395,
-        "resolution": "1080x2400",
+        "resolution": "1080x1920",
         # Mi 11 — global, but huge in China, India, EU, Middle East
         "timezones": ["Asia/Shanghai", "Asia/Kolkata", "Europe/Rome", "Asia/Dubai", "Africa/Cairo"],
         "locales":   ["zh-CN", "en-IN", "it-IT", "ar-AE", "ar-EG"],
@@ -192,7 +192,7 @@ DEVICE_PROFILES = [
         "platform": "mt6877",
         "hardware": "mt6877",
         "density": 411,
-        "resolution": "1080x2400",
+        "resolution": "1080x1920",
         # OPPO Reno6 — Southeast Asia, Middle East, Africa
         "timezones": ["Asia/Jakarta", "Asia/Bangkok", "Asia/Karachi", "Africa/Lagos", "Asia/Riyadh"],
         "locales":   ["id-ID", "th-TH", "ur-PK", "en-NG", "ar-SA"],

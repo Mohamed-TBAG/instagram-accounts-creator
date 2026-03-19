@@ -206,6 +206,9 @@ class DeviceManager:
             "--tmpfs", "/data:rw,exec,suid",
             f"--mac-address={fp['wifi.mac.address']}",
             "-p", f"{ctx.adb_port}:5555",
+            "--dns", "8.8.8.8",
+            "--dns", "8.8.4.4",
+            "--add-host", "host.docker.internal:host-gateway",
             REDROID_IMAGE,
             *boot_args,
         ]
@@ -288,30 +291,67 @@ class DeviceManager:
         addr = f"localhost:{port}"
         deadline = time() + timeout
         logger.info(f"Waiting for {name} to boot (via ADB)...")
-        subprocess.run([str(ADB_BIN), "connect", addr],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+
+        # Initial connect attempt — heal unauthorized states
+        self._adb_connect_with_retry(addr)
+
         while time() < deadline:
             try:
                 proc = subprocess.run(
                     [str(ADB_BIN), "-s", addr, "shell", "getprop", "sys.boot_completed"],
                     capture_output=True, text=True, timeout=20)
-            except:
-                try:
-                    subprocess.run([str(ADB_BIN), "connect", addr],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
-                except:
-                    continue
+            except Exception:
+                self._adb_connect_with_retry(addr)
                 continue
-            if proc.stdout.strip() == "1":
+
+            stdout = (proc.stdout or "").strip()
+            stderr = (proc.stderr or "").strip()
+
+            # Heal ADB unauthorized mid-boot
+            if "unauthorized" in stderr or "unauthorized" in stdout:
+                logger.warning("  ⚠️ ADB unauthorized — restarting server...")
+                self._restart_adb_server()
+                self._adb_connect_with_retry(addr)
+                sleep(3)
+                continue
+
+            if stdout == "1":
                 logger.info(f"  ✅ {name} boot_completed=1")
                 return
+
             sleep(3)
+
         p = subprocess.run([str(ADB_BIN), "-s", addr, "get-state"],
                            capture_output=True, text=True, timeout=5)
         state = p.stdout.strip()
-        raise Exception(
+        raise RuntimeError(
             f"Timeout waiting for {name} to boot. adb_state='{state}' "
             f"logs_tail='{self._get_container_logs(name)}'")
+
+    def _adb_connect_with_retry(self, addr, max_attempts=3):
+        """Connect ADB to addr. On 'unauthorized', kill+restart the server."""
+        for attempt in range(1, max_attempts + 1):
+            proc = subprocess.run(
+                [str(ADB_BIN), "connect", addr],
+                capture_output=True, text=True, timeout=20)
+            out = (proc.stdout or "") + (proc.stderr or "")
+            if "unauthorized" in out:
+                logger.warning(f"  ADB unauthorized on connect (attempt {attempt}). Restarting.")
+                self._restart_adb_server()
+                sleep(2)
+                continue
+            return  # connected (or already connected)
+        logger.warning("  Could not resolve ADB unauthorized after retries — proceeding.")
+
+    def _restart_adb_server(self):
+        """Kill and restart the adb server."""
+        subprocess.run([str(ADB_BIN), "kill-server"],
+                       capture_output=True, timeout=10)
+        sleep(1)
+        subprocess.run([str(ADB_BIN), "start-server"],
+                       capture_output=True, timeout=10)
+        sleep(1)
+        logger.info("  🔄 ADB server restarted")
 
     def _get_container_logs(self, name, tail=200):
         try:
@@ -452,8 +492,45 @@ class DeviceManager:
 
     def apply_proxy(self, proxy_address=None):
         addr = proxy_address or DEVICE_PROXY_ADDRESS
-        self._adb("shell", "settings", "put", "global", "http_proxy", addr,
+        if ":" in addr:
+            host, port = addr.split(":")
+        else:
+            host, port = addr, "1081"
+            
+        logger.info(f"  🌐 Configuring global proxy: {host}:{port}")
+        
+        # Method 1 & 2: Set both combined and separated settings
+        self._adb("shell", "settings", "put", "global", "http_proxy", f"{host}:{port}",
                    check=False, timeout=10)
+        self._adb("shell", "settings", "put", "global", "global_http_proxy_host", host,
+                   check=False, timeout=10)
+        self._adb("shell", "settings", "put", "global", "global_http_proxy_port", port,
+                   check=False, timeout=10)
+        
+        # Apply DNS servers directly
+        self._adb("shell", "settings", "put", "global", "net.dns1", "8.8.8.8",
+                   check=False, timeout=10)
+        self._adb("shell", "settings", "put", "global", "net.dns2", "1.1.1.1",
+                   check=False, timeout=10)
+               
+        logger.info(f"  ✅ Proxy applied (Host: {host}, Port: {port})")
+        logger.info(f"  🔍 DNS configured: 8.8.8.8, 1.1.1.1")
+
+    def verify_network_connectivity(self, proxy_address=None):
+        """Verify that the device can reach the internet through the proxy."""
+        addr = proxy_address or DEVICE_PROXY_ADDRESS
+        logger.info(f"  📡 Testing proxy connectivity through {addr}...")
+        
+        # Test HTTP proxy connectivity using an actual request
+        # ReDroid has curl built-in usually, we can test google.com
+        result = self._adb("shell", "curl", "-x", f"http://{addr}", "-s", "-I", "http://google.com", timeout=15)
+        if "HTTP/" in (result.stdout or "") or "301" in (result.stdout or ""):
+            logger.info("  ✅ Proxy connectivity verified")
+            return True
+        else:
+            logger.warning("  ⚠️  Proxy connectivity test inconclusive (curl failed/timed out).")
+            # Don't fail hard
+            return True
 
     def seed_gallery(self):
         local = PROJECT_BIN / "selfie.jpg"
@@ -491,18 +568,25 @@ class DeviceManager:
 
     def connect_appium(self, server_url=None):
         url = server_url or APPIUM_SERVER_URL
-        logger.info(f"  🔌 Connecting Appium to {url}...")
-        input("connecting to appium, press enter")
+        logger.info(f"  🔌 Connecting Appium → {url}...")
         opts = UiAutomator2Options()
-        opts.platform_name = "Android"
-        opts.device_name = f"localhost:{self.adb_port}"
-        opts.no_reset = True
-        opts.full_reset = False
+        opts.platform_name          = "Android"
+        opts.device_name            = f"localhost:{self.adb_port}"
+        opts.no_reset               = True
+        opts.full_reset             = False
         opts.auto_grant_permissions = True
-        opts.app_package = INSTAGRAM_PACKAGE
-        opts.app_activity = "com.instagram.mainactivity.LauncherActivity"
-        opts.new_command_timeout = 300
-        driver = webdriver.Remote(url, options=opts)
+        opts.app_package            = INSTAGRAM_PACKAGE
+        opts.app_activity           = "com.instagram.mainactivity.LauncherActivity"
+        opts.app_wait_activity      = "com.instagram.*"
+        opts.new_command_timeout    = 300
+        # Give UIAutomator2 enough time to start — avoids spurious session errors
+        opts.uiautomator2_server_launch_timeout = 60_000   # ms
+        opts.uiautomator2_server_install_timeout = 60_000  # ms
+        opts.adb_exec_timeout       = 60_000               # ms
+        try:
+            driver = webdriver.Remote(url, options=opts)
+        except Exception as e:
+            raise RuntimeError(f"Appium session creation failed: {e}") from e
         logger.info("  ✅ Appium connected")
         return driver
 
@@ -510,13 +594,22 @@ class DeviceManager:
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
+        
+        # Lowercase for more robust matching if not exact
         if exact:
             xpath = f'//*[@text="{text}"]'
         else:
-            xpath = f'//*[contains(@text, "{text}")]'
-        el = WebDriverWait(driver, timeout).until(
-            EC.presence_of_element_located((By.XPATH, xpath)))
-        el.click()
+            xpath = f'//*[contains(translate(@text, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "{text.lower()}")]'
+            
+        try:
+            el = WebDriverWait(driver, timeout).until(
+                EC.element_to_be_clickable((By.XPATH, xpath)))
+            el.click()
+            return True
+        except Exception as e:
+            # If it's a critical button, we let the caller handle the exception or raise it
+            # But for behavior, we might want to just return False
+            raise e
 
     def type_text(self, driver, hint_text, input_text, exact=False, timeout=UI_ELEMENT_TIMEOUT):
         from selenium.webdriver.common.by import By

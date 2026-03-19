@@ -1,22 +1,28 @@
 #!/bin/bash
-set -e
+set -euo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "This script must be run as root." >&2
+    exit 1
+fi
+
 echo "Unmounting binderfs..."
 # Force unmount if busy
-sudo umount -l /dev/binderfs || true
+umount -l /dev/binderfs || true
 
 echo "Unloading binder_linux module..."
 # Might fail if in use, force?
-sudo rmmod binder_linux || echo "Module in use or not loaded"
+rmmod binder_linux || echo "Module in use or not loaded"
 
 echo "Reloading binder_linux module with devices parameter..."
 # Clean load
-sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
+modprobe binder_linux devices="binder,hwbinder,vndbinder"
 
 echo "Remounting binderfs..."
 if [ ! -d "/dev/binderfs" ]; then
-    sudo mkdir -p /dev/binderfs
+    mkdir -p /dev/binderfs
 fi
-sudo mount -t binder binder /dev/binderfs
+mount -t binder binder /dev/binderfs
 
 echo "Checking nodes..."
 ls -l /dev/binderfs

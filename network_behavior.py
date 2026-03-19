@@ -1,8 +1,10 @@
 import logging
+import threading
 from time import time
 from uuid import uuid4
 import requests
 from config import PROXY_HOST, PROXY_PORT
+import socket
 
 logger = logging.getLogger("NetworkBehavior")
 
@@ -11,10 +13,33 @@ class NetworkBehavior:
         self.dm = device_manager
         self.fingerprint = self.dm.get_device_fingerprint()
         self.session = requests.Session()
-        proxy_url = f"socks5://{PROXY_HOST}:{PROXY_PORT}"
-        self.session.proxies = {
-            "http": proxy_url,
-            "https": proxy_url}
+        # Prefer HTTP proxy if available (WireProxy exposes both HTTP and SOCKS).
+        # Probe proxy ports and pick the reachable one to reduce "Connection refused" errors.
+        def _tcp_connect(host, port, timeout=1.0):
+            try:
+                with socket.create_connection((host, port), timeout=timeout):
+                    return True
+            except Exception:
+                return False
+
+        http_port = getattr(__import__('config'), 'HTTP_PROXY_PORT', None)
+        http_ok = False
+        try:
+            http_ok = _tcp_connect(PROXY_HOST, http_port or PROXY_PORT)
+        except Exception:
+            http_ok = False
+
+        if http_ok:
+            proxy_url = f"http://{PROXY_HOST}:{http_port}"
+            self.session.proxies = {"http": proxy_url, "https": proxy_url}
+            logger.info(f"Using HTTP proxy for requests: {proxy_url}")
+        else:
+            # Fallback to SOCKS5
+            proxy_url = f"socks5://{PROXY_HOST}:{PROXY_PORT}"
+            self.session.proxies = {"http": proxy_url, "https": proxy_url}
+            logger.info(f"Using SOCKS5 proxy for requests: {proxy_url}")
+        # Disable IPv4 fallback
+        self.session.trust_env = False
         self.base_headers = {
             "Accept-Language": "en-US",
             "X-Fb-Client-Ip": "True",
@@ -50,28 +75,64 @@ class NetworkBehavior:
         return headers
 
     def _post(self, url, headers, data, timeout, description, verify=True):
-        resp = self.session.post(url, headers=headers, data=data, timeout=timeout, verify=verify)
-        resp.raise_for_status()
-        logger.info(f"{description} status: {resp.status_code}")
+        """Make POST request with error tolerance for fast operation."""
+        try:
+            resp = self.session.post(url, headers=headers, data=data, timeout=timeout, verify=verify)
+            resp.raise_for_status()
+            logger.info(f"✅ {description} status: {resp.status_code}")
+            return resp
+        except Exception as e:
+            logger.warning(f"⚠️  {description} failed (non-critical): {str(e)[:100]}")
+            # Don't fail - these are telemetry requests
+            return None
 
-    def send_pigeon_log(self, event_name="app_start"):
+    def _post_async(self, url, headers, data, timeout, description, verify=True):
+        """Make POST request asynchronously (non-blocking)."""
+        def task():
+            self._post(url, headers, data, timeout, description, verify)
+        
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+        return thread
+
+    def send_pigeon_log(self, event_name="app_start", async_mode=False):
         url = "https://graph.instagram.com/pigeon_nest"
         headers = self._get_common_headers()
-        headers["Content-Type"] = "multipart/form-data; boundary=boundary123"
+        # Remove Content-Type so requests set it with boundary
+        if "Content-Type" in headers:
+            del headers["Content-Type"]
+        
         headers["X-Fb-Friendly-Name"] = "undefined:analytics"
-        body = (
-            "--boundary123\r\n"
-            "Content-Disposition: form-data; name=\"access_token\"\r\n\r\n"
-            "567067343352427|f249176f09e26ce54212b472dbab8fa8\r\n"
-            "--boundary123\r\n"
-            "Content-Disposition: form-data; name=\"cmsg\"; filename=\"cmsg\"\r\n"
-            "Content-Type: application/octet-stream\r\n\r\n"
-            "\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x00\x03\xcb\x4b\xcd\x2b\x29\x67\x60\x60\x60\x00\x00\x2d\x3a\x07\x3a\x09\x00\x00\x00" 
-            "\r\n--boundary123--\r\n")
+        
+        # Proper multipart via requests
+        data = {
+            "access_token": "567067343352427|f249176f09e26ce54212b472dbab8fa8",
+        }
+        # Minimal gzip'd cmsg data
+        cmsg_data = b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x00\x03\xcb\x4b\xcd\x2b\x29\x67\x60\x60\x60\x00\x00\x2d\x3a\x07\x3a\x09\x00\x00\x00"
+        files = {
+            "cmsg": ("cmsg", cmsg_data, "application/octet-stream")
+        }
+        
         logger.info(f"📡 Sending Pigeon Log ({event_name})...")
-        self._post(url, headers, body, timeout=10, description="Pigeon log", verify=False)
+        
+        def _execute():
+            try:
+                # We use internal _post logic but override with files
+                resp = self.session.post(url, headers=headers, data=data, files=files, timeout=10, verify=False)
+                if resp.status_code == 200:
+                    logger.info(f"✅ Pigeon log ({event_name}) status: 200")
+                else:
+                    logger.warning(f"⚠️  Pigeon log ({event_name}) returned {resp.status_code} (non-critical)")
+            except Exception as e:
+                logger.warning(f"⚠️  Pigeon log ({event_name}) failed: {str(e)[:50]}")
 
-    def send_launcher_sync(self):
+        if async_mode:
+            threading.Thread(target=_execute, daemon=True).start()
+        else:
+            _execute()
+
+    def send_launcher_sync(self, async_mode=True):
         url = "https://i.instagram.com/api/v1/launcher/sync/"
         headers = self._get_common_headers()
         headers["X-Ig-Device-Id"] = self.fingerprint["guid"]
@@ -80,9 +141,13 @@ class NetworkBehavior:
             "configs": "ig_android_launcher_sync_config",
             "id": self.fingerprint["guid"]}
         logger.info("📡 Sending Launcher Sync...")
-        self._post(url, headers, data, timeout=10, description="Launcher sync")
+        
+        if async_mode:
+            return self._post_async(url, headers, data, timeout=10, description="Launcher sync")
+        else:
+            return self._post(url, headers, data, timeout=10, description="Launcher sync")
 
-    def send_prefill_check(self):
+    def send_prefill_check(self, async_mode=True):
         url = "https://i.instagram.com/api/v1/accounts/contact_point_prefill/"
         headers = self._get_common_headers()
         headers["X-Ig-Device-Id"] = self.fingerprint["guid"]
@@ -91,9 +156,13 @@ class NetworkBehavior:
             "_uuid": self.fingerprint["guid"],
             "usage": "prefill"}
         logger.info("📡 Sending Contact Prefill Check...")
-        self._post(url, headers, data, timeout=10, description="Contact prefill check")
+        
+        if async_mode:
+            return self._post_async(url, headers, data, timeout=10, description="Contact prefill check")
+        else:
+            return self._post(url, headers, data, timeout=10, description="Contact prefill check")
 
-    def send_qe_sync(self):
+    def send_qe_sync(self, async_mode=True):
         url = "https://i.instagram.com/api/v1/qe/sync/"
         headers = self._get_common_headers()
         headers["X-Ig-Device-Id"] = self.fingerprint["guid"]
@@ -101,13 +170,28 @@ class NetworkBehavior:
             "id": self.fingerprint["guid"],
             "experiments": "ig_android_growth_fx_refactor"}
         logger.info("📡 Sending QE Sync...")
-        self._post(url, headers, data, timeout=10, description="QE sync")
+        
+        if async_mode:
+            return self._post_async(url, headers, data, timeout=10, description="QE sync")
+        else:
+            return self._post(url, headers, data, timeout=10, description="QE sync")
 
-    def send_mock_browser_request(self):
-        logger.info("🌍 Sending Browser Connectivity Check...")
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.104 Mobile Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"}
-        resp = self.session.get("https://www.instagram.com/", headers=headers, timeout=10)
-        resp.raise_for_status()
-        logger.info(f"Browser check status: {resp.status_code}")
+    def send_mock_browser_request(self, async_mode=True):
+        """Send browser request to make device look active (non-critical, can fail)."""
+        def make_request():
+            try:
+                logger.info("🌍 Sending Browser Connectivity Check...")
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.104 Mobile Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"}
+                resp = self.session.get("https://www.instagram.com/", headers=headers, timeout=10, verify=False)
+                logger.info(f"✅ Browser check status: {resp.status_code}")
+            except Exception as e:
+                logger.warning(f"⚠️  Browser check failed (non-critical): {str(e)[:100]}")
+        
+        if async_mode:
+            thread = threading.Thread(target=make_request, daemon=True)
+            thread.start()
+            return thread
+        else:
+            make_request()
