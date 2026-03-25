@@ -101,6 +101,9 @@ REDROID_DPI = _env_int("REDROID_DPI", 320, 120, 640)
 REDROID_FPS = _env_int("REDROID_FPS", 30, 10, 120)
 REDROID_AUDIT_ENABLED   = _env_bool("REDROID_AUDIT_ENABLED", True)
 REDROID_VERIFY_STRICT   = _env_bool("REDROID_VERIFY_STRICT", True)
+GAID_DISCOVERY_ENABLED = _env_bool("GAID_DISCOVERY_ENABLED", True)
+GAID_RESET_ON_BOOT = _env_bool("GAID_RESET_ON_BOOT", False)
+GAID_DISCOVERY_TIMEOUT = _env_int("GAID_DISCOVERY_TIMEOUT", 20, 5, 120)
 
 API_URL = _env_str("API_URL", "http://195.138.76.179:8000/connect")
 PROXY_HOST = _env_str("PROXY_HOST", "127.0.0.1")
@@ -133,7 +136,6 @@ DEVICE_PROFILES = [
         "hardware": "gs101",
         "density": 420,
         "resolution": "1080x1920",
-        # Pixel 6 was primarily sold in US/EU — pick from realistic markets
         "timezones": ["America/New_York", "America/Los_Angeles", "America/Chicago", "Europe/London", "Europe/Paris"],
         "locales":   ["en-US", "en-GB", "fr-FR", "de-DE"],
     },
@@ -148,7 +150,6 @@ DEVICE_PROFILES = [
         "hardware": "samsungexynos2200",
         "density": 420,
         "resolution": "1080x2340",
-        # SM-S901B (Exynos) is EU/Asia variant
         "timezones": ["Europe/Berlin", "Europe/Istanbul", "Europe/Warsaw", "Asia/Riyadh", "Africa/Cairo"],
         "locales":   ["de-DE", "tr-TR", "pl-PL", "ar-SA", "ar-EG"],
     },
@@ -163,7 +164,6 @@ DEVICE_PROFILES = [
         "hardware": "qcom",
         "density": 402,
         "resolution": "1080x1920",
-        # OnePlus 9 — popular in India, EU, Middle East
         "timezones": ["Asia/Kolkata", "Asia/Dubai", "Europe/Amsterdam", "Asia/Riyadh"],
         "locales":   ["en-IN", "ar-AE", "nl-NL", "ar-SA"],
     },
@@ -178,7 +178,6 @@ DEVICE_PROFILES = [
         "hardware": "qcom",
         "density": 395,
         "resolution": "1080x1920",
-        # Mi 11 — global, but huge in China, India, EU, Middle East
         "timezones": ["Asia/Shanghai", "Asia/Kolkata", "Europe/Rome", "Asia/Dubai", "Africa/Cairo"],
         "locales":   ["zh-CN", "en-IN", "it-IT", "ar-AE", "ar-EG"],
     },
@@ -193,7 +192,6 @@ DEVICE_PROFILES = [
         "hardware": "mt6877",
         "density": 411,
         "resolution": "1080x1920",
-        # OPPO Reno6 — Southeast Asia, Middle East, Africa
         "timezones": ["Asia/Jakarta", "Asia/Bangkok", "Asia/Karachi", "Africa/Lagos", "Asia/Riyadh"],
         "locales":   ["id-ID", "th-TH", "ur-PK", "en-NG", "ar-SA"],
     },

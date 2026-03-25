@@ -2,6 +2,7 @@ import logging
 import sys
 from pathlib import Path
 from datetime import datetime
+
 def setup_logging(log_dir=None, app_name="Instagram"):
     if log_dir is None:
         log_dir = Path.cwd()

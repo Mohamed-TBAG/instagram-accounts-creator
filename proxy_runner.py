@@ -2,11 +2,9 @@ from pathlib import Path
 from subprocess import DEVNULL, Popen, TimeoutExpired, check_output, run
 from time import sleep
 import requests
-
 from config import API_URL, PROXY_HOST, WIREPROXY_BIN, WG_KEY_BIN
 from logger_config import get_logger
 from session import SessionContext
-
 logger = get_logger("ProxyClient")
 
 class VPNProxyClient:
@@ -19,8 +17,6 @@ class VPNProxyClient:
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.conf_path = self.session_dir / "wireproxy.conf"
         self.log_path = self.session_dir / "wireproxy.log"
-        # Android's Bionic DNS resolver ignores /etc/hosts, so host.docker.internal fails.
-        # We must use the direct Docker bridge gateway IP (usually 172.17.0.1).
         self.session_http_proxy = f"172.17.0.1:{self.ctx.http_proxy_port}"
         self.session_socks_proxy = f"172.17.0.1:{self.ctx.socks_port}"
         self.http = requests.Session()
@@ -39,33 +35,21 @@ class VPNProxyClient:
         return resp.json()
 
     def create_config(self, lease, privkey):
-        # We must bind to 0.0.0.0 so the docker container (on a bridge network)
-        # can reach the host-gateway IP that wireproxy is listening on.
-        #
-        # IPv6 ROUTING FIX:
-        # The lease gives us a unique IPv6 from the Finland server.
-        # By routing ALL traffic through the tunnel (::/0 and 0.0.0.0/0),
-        # outbound connections use the assigned IPv6 as source.
-        # DNS must list IPv6 resolver FIRST so DNS lookups go IPv6 and
-        # reveal the Finland IPv6, not the Ukraine IPv4.
         config = (
             "[Interface]\n"
             f"PrivateKey = {privkey}\n"
             f"Address = {lease['address']}\n"
-            # IPv6-first DNS: Cloudflare IPv6 first, then fallback to IPv4
             "DNS = 2606:4700:4700::1111, 2606:4700:4700::1001, 1.1.1.1\n"
             f"MTU = {lease['mtu']}\n"
             "[Peer]\n"
             f"PublicKey = {lease['peer_pubkey']}\n"
             f"Endpoint = {lease['endpoint']}\n"
-            # Route ALL traffic through VPN (both IPv4 and IPv6)
             "AllowedIPs = 0.0.0.0/0, ::/0\n"
             "PersistentKeepalive = 25\n"
             "[Socks5]\n"
             f"BindAddress = 0.0.0.0:{self.ctx.socks_port}\n"
             "[Http]\n"
-            f"BindAddress = 0.0.0.0:{self.ctx.http_proxy_port}\n"
-        )
+            f"BindAddress = 0.0.0.0:{self.ctx.http_proxy_port}\n")
         self.conf_path.write_text(config, encoding="utf-8")
         return self.conf_path
 

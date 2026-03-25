@@ -1,18 +1,12 @@
-"""
-HumanBehavior — all human-like interaction helpers used during signup.
-"""
 import random
 import subprocess
 import logging
 from time import sleep
-
 logger = logging.getLogger("HumanBehavior")
 
-# Import ADB_BIN lazily to avoid circular-import issues at module load.
 def _adb_bin():
     from config import ADB_BIN
     return ADB_BIN
-
 
 class HumanBehavior:
 
@@ -23,10 +17,7 @@ class HumanBehavior:
             'o': 'i', 'p': 'o', 'q': 'w', 'r': 'e', 's': 'a', 't': 'r', 'u': 'i',
             'v': 'b', 'w': 'q', 'x': 'c', 'y': 'u', 'z': 'x',
             '1': '2', '2': '1', '3': '4', '4': '3', '5': '6', '6': '5',
-            '7': '8', '8': '7', '9': '0', '0': '9',
-        }
-
-    # ── Timing helpers ─────────────────────────────────────────────────────────
+            '7': '8', '8': '7', '9': '0', '0': '9',}
 
     @staticmethod
     def gaussian_pause(mean=2.0, std=0.5, min_time=0.3, max_time=8.0):
@@ -44,8 +35,6 @@ class HumanBehavior:
             logger.info(f"🧠 Attention lapse... ({t:.1f}s)")
             sleep(t)
 
-    # ── Typing ─────────────────────────────────────────────────────────────────
-
     def type_with_typos(self, adb_bin, text, field_type="default"):
         speed = self._get_typing_speed(field_type)
         i = 0
@@ -59,7 +48,6 @@ class HumanBehavior:
                     sleep(random.gauss(0.7, 0.25))
                     subprocess.run([str(adb_bin), "shell", "input", "keyevent", "67"], check=False)
                     sleep(random.gauss(0.3, 0.1))
-            # Escape problematic chars
             if char == ' ':
                 subprocess.run([str(adb_bin), "shell", "input", "text", "%s"], check=False)
             elif char == "'":
@@ -82,25 +70,19 @@ class HumanBehavior:
         }
         return max(0.05, speeds.get(field_type, speeds["default"]))
 
-    # ── Password eye toggle ────────────────────────────────────────────────────
-
     @staticmethod
     def verify_password_eye(device_mgr, driver):
         """Toggle the password-visibility eye icon. Non-fatal — caller wraps in try/except."""
         if random.random() > 0.75:
-            return  # skip 25% of the time
-
+            return  
         logger.info("👁️  Human behavior: toggling password eye icon...")
         sleep(random.gauss(1.2, 0.4))
-
         selectors = [
             ("id",    "com.instagram.android:id/text_input_end_icon"),
             ("xpath", "//android.widget.ImageButton[@content-desc='Show password']"),
             ("xpath", "//android.widget.ImageButton[@content-desc='Hide password']"),
             ("xpath", "//android.widget.ImageView[contains(@content-desc,'password')]"),
-            ("text",  "Password visibility"),
-        ]
-
+            ("text",  "Password visibility"),]
         from selenium.webdriver.common.by import By
         success = False
         for kind, sel in selectors:
@@ -115,14 +97,11 @@ class HumanBehavior:
                 break
             except Exception:
                 continue
-
         if success:
             logger.info("  ✓ Eye icon toggled")
             sleep(random.gauss(1.8, 0.4))
         else:
             raise RuntimeError("Eye icon not found with any selector")
-
-    # ── Scroll helpers ─────────────────────────────────────────────────────────
 
     @staticmethod
     def scroll_through_terms(device_mgr, driver):
@@ -152,8 +131,6 @@ class HumanBehavior:
             device_mgr.swipe(driver, 820, 1350, 820, 1150, random.randint(250, 350))
             sleep(random.gauss(0.4, 0.15))
         sleep(random.gauss(0.8, 0.3))
-
-    # ── Field-level micro-behaviors ────────────────────────────────────────────
 
     @staticmethod
     def double_check_field(adb_bin):
@@ -203,11 +180,8 @@ class HumanBehavior:
         except Exception:
             logger.info("  ⏭️  Edit button not found — using suggested username.")
 
-    # ── App-level macro behaviors ──────────────────────────────────────────────
-
     @staticmethod
     def app_restarts_behavior(device_mgr, package_name):
-        """Close and re-open the app randomly — looks like an indecisive user."""
         if random.random() < 0.4:
             logger.info("📱 Human behavior: closing & re-opening app (indecisive launch)...")
             device_mgr._adb("shell", "am", "force-stop", package_name)
@@ -218,7 +192,6 @@ class HumanBehavior:
 
     @staticmethod
     def fake_login_behavior(device_mgr, driver, adb_bin):
-        """Type a fake username/password on the login screen, then back out."""
         logger.info("👤 Human behavior: probing login screen with fake credentials...")
         try:
             fake_user = f"user_{random.randint(1000, 9999)}"
@@ -226,14 +199,11 @@ class HumanBehavior:
             sleep(0.5)
             subprocess.run([str(adb_bin), "shell", "input", "text", fake_user], check=False)
             sleep(random.gauss(1.5, 0.4))
-
             device_mgr.click_text(driver, "Password", exact=False, timeout=5)
             sleep(0.5)
             subprocess.run([str(adb_bin), "shell", "input", "text", "qwerty123"], check=False)
             sleep(random.gauss(2.0, 0.5))
-
             logger.info("  'Hmm, that's not right. Let me create a new account.'")
-            # Dismiss keyboard first
             subprocess.run([str(adb_bin), "shell", "input", "keyevent", "4"], check=False)
             sleep(0.5)
         except Exception as e:
@@ -241,7 +211,6 @@ class HumanBehavior:
 
     @staticmethod
     def forgot_password_trip(device_mgr, driver, adb_bin):
-        """Navigate to Forgot Password and immediately come back."""
         if random.random() < 0.4:
             logger.info("🔍 Human behavior: wandering into 'Forgot password'...")
             try:
@@ -251,11 +220,10 @@ class HumanBehavior:
                 subprocess.run([str(adb_bin), "shell", "input", "keyevent", "4"], check=False)
                 sleep(random.gauss(1.0, 0.3))
             except Exception:
-                pass  # not visible — that's fine
+                pass  
 
     @staticmethod
     def check_system_settings(device_mgr, adb_bin):
-        """Briefly open system settings then come back — looks like a distracted user."""
         if random.random() < 0.20:
             logger.info("⚙️  Human behavior: checking system settings...")
             device_mgr._adb("shell", "am", "start", "-a", "android.settings.SETTINGS")
@@ -267,7 +235,6 @@ class HumanBehavior:
 
     @staticmethod
     def accidental_minimize(device_mgr):
-        """Accidentally press Home, then restore the app."""
         if random.random() < 0.15:
             logger.info("🏠 Human behavior: accidental home press — restoring...")
             from config import INSTAGRAM_PACKAGE
@@ -279,7 +246,6 @@ class HumanBehavior:
 
     @staticmethod
     def navigation_hesitation(adb_bin):
-        """Pause before tapping Next, and occasionally go back one screen."""
         if random.random() < 0.25:
             logger.info("🤔 Human behavior: navigation hesitation...")
             sleep(random.gauss(2.5, 1.0))
@@ -287,4 +253,3 @@ class HumanBehavior:
                 logger.info("  'Let me check the previous screen...'")
                 subprocess.run([str(adb_bin), "shell", "input", "keyevent", "4"], check=False)
                 sleep(random.gauss(2.0, 0.5))
-                # Caller is responsible for re-clicking the forward button if needed

@@ -1,8 +1,10 @@
 import json
 import logging
 import random
+import re
 import subprocess
 import uuid
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 from time import sleep, time
@@ -18,11 +20,11 @@ from config import (
     DEVICE_PROXY_ADDRESS, UI_ELEMENT_TIMEOUT,
     ADB_DEFAULT_TIMEOUT, BOOT_TIMEOUT, APPIUM_CONNECT_TIMEOUT,
     REDROID_IMAGE, REDROID_GPU_MODE, REDROID_WIDTH, REDROID_HEIGHT, REDROID_FPS,
-    REDROID_AUDIT_ENABLED, REDROID_VERIFY_STRICT,
+    REDROID_AUDIT_ENABLED, REDROID_VERIFY_STRICT, GAID_DISCOVERY_ENABLED,
+    GAID_RESET_ON_BOOT, GAID_DISCOVERY_TIMEOUT,
     DEVICE_PROFILES,
 )
 from session import SessionContext
-
 logger = logging.getLogger("DeviceManager")
 
 class DeviceManager:
@@ -32,6 +34,8 @@ class DeviceManager:
         self.fingerprint = None
         self.previous_fingerprint = None
         self._boot_start_time = None
+        self.identity_registry_path = LOG_DIR / "identity_registry.json"
+        self.identity_registry = self._load_identity_registry()
         if not ADB_BIN.exists():
             raise FileNotFoundError(f"adb binary not found at {ADB_BIN}")
 
@@ -67,67 +71,162 @@ class DeviceManager:
         check = (10 - (total % 10)) % 10
         return "".join(str(d) for d in digits) + str(check)
 
-    def generate_random_identity(self):
-        profile = random.choice(DEVICE_PROFILES)
-        incremental = self._random_incremental()
-        build_id = f"RQ3A.{random.randint(210000, 219999)}.00{random.randint(1, 9)}"
-        security_patch = random.choice(
-            ["2024-01-05", "2024-02-05", "2024-03-05", "2024-04-05"])
+    def _load_identity_registry(self):
+        if not self.identity_registry_path.exists():
+            return {
+                "serials": [],
+                "android_ids": [],
+                "wifi_macs": [],
+                "bt_macs": [],
+                "imeis": [],
+                "guids": [],
+                "phone_ids": [],
+                "gaids": [],
+            }
+        try:
+            data = json.loads(self.identity_registry_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("Registry payload must be an object")
+            return {
+                "serials": list(data.get("serials", [])),
+                "android_ids": list(data.get("android_ids", [])),
+                "wifi_macs": list(data.get("wifi_macs", [])),
+                "bt_macs": list(data.get("bt_macs", [])),
+                "imeis": list(data.get("imeis", [])),
+                "guids": list(data.get("guids", [])),
+                "phone_ids": list(data.get("phone_ids", [])),
+                "gaids": list(data.get("gaids", [])),
+            }
+        except Exception:
+            logger.warning("  ⚠️ Identity registry is corrupt; starting fresh.")
+            return {
+                "serials": [],
+                "android_ids": [],
+                "wifi_macs": [],
+                "bt_macs": [],
+                "imeis": [],
+                "guids": [],
+                "phone_ids": [],
+                "gaids": [],
+            }
 
+    def _save_identity_registry(self):
+        self.identity_registry_path.parent.mkdir(parents=True, exist_ok=True)
+        self.identity_registry_path.write_text(
+            json.dumps(self.identity_registry, indent=2),
+            encoding="utf-8",
+        )
+
+    def _value_seen(self, bucket, value):
+        if not value:
+            return False
+        return value in self.identity_registry.get(bucket, [])
+
+    def _mark_value(self, bucket, value):
+        if not value:
+            return
+        target = self.identity_registry.setdefault(bucket, [])
+        if value in target:
+            return
+        target.append(value)
+        # Keep file bounded while preserving long enough history.
+        if len(target) > 5000:
+            del target[:-5000]
+
+    def _identity_candidate_reused(self, candidate):
+        return any([
+            self._value_seen("serials", candidate.get("ro.serialno")),
+            self._value_seen("android_ids", candidate.get("android_id")),
+            self._value_seen("wifi_macs", candidate.get("wifi.mac.address")),
+            self._value_seen("bt_macs", candidate.get("bluetooth.mac.address")),
+            self._value_seen("imeis", candidate.get("hw.gsmModem.imei")),
+            self._value_seen("guids", candidate.get("guid")),
+            self._value_seen("phone_ids", candidate.get("phone_id")),
+        ])
+
+    def _mark_identity_used(self, fp):
+        self._mark_value("serials", fp.get("ro.serialno"))
+        self._mark_value("android_ids", fp.get("android_id"))
+        self._mark_value("wifi_macs", fp.get("wifi.mac.address"))
+        self._mark_value("bt_macs", fp.get("bluetooth.mac.address"))
+        self._mark_value("imeis", fp.get("hw.gsmModem.imei"))
+        self._mark_value("guids", fp.get("guid"))
+        self._mark_value("phone_ids", fp.get("phone_id"))
+        self._mark_value("gaids", fp.get("google_ad_id"))
+        self._save_identity_registry()
+
+    def generate_random_identity(self):
         previous = self.previous_fingerprint or {}
-        serial = self._random_serial(12)
-        mac = self._random_mac()
-        bt_mac = self._random_mac()
-        android_id = self._random_hex(16)
-        guid = str(uuid.uuid4())
-        while (
-            serial == previous.get("ro.serialno")
-            or mac == previous.get("wifi.mac.address")
-            or android_id == previous.get("android_id")
-            or guid == previous.get("guid")
-        ):
+        for _ in range(80):
+            profile = random.choice(DEVICE_PROFILES)
+            incremental = self._random_incremental()
+            build_id = f"RQ3A.{random.randint(210000, 219999)}.00{random.randint(1, 9)}"
+            security_patch = random.choice(
+                ["2024-01-05", "2024-02-05", "2024-03-05", "2024-04-05"])
             serial = self._random_serial(12)
             mac = self._random_mac()
+            bt_mac = self._random_mac()
             android_id = self._random_hex(16)
             guid = str(uuid.uuid4())
+            phone_id = str(uuid.uuid4())
+            imei = self._random_imei()
 
-        build_fp = (
-            f"{profile['brand']}/{profile['name']}/{profile['device']}:"
-            f"11/{build_id}/{incremental}:user/release-keys"
-        )
-        desc = f"{profile['name']}-user 11 {build_id} {incremental} release-keys"
-        timezone = random.choice(profile.get("timezones", ["America/New_York"]))
-        locale = random.choice(profile.get("locales", ["en-US"]))
+            if (
+                serial == previous.get("ro.serialno")
+                or mac == previous.get("wifi.mac.address")
+                or bt_mac == previous.get("bluetooth.mac.address")
+                or android_id == previous.get("android_id")
+                or guid == previous.get("guid")
+                or phone_id == previous.get("phone_id")
+                or imei == previous.get("hw.gsmModem.imei")
+            ):
+                continue
 
-        self.fingerprint = {
-            "ro.product.manufacturer":  profile["manufacturer"],
-            "ro.product.brand":         profile["brand"],
-            "ro.product.model":         profile["model"],
-            "ro.product.name":          profile["name"],
-            "ro.product.device":        profile["device"],
-            "ro.serialno":              serial,
-            "ro.boot.serialno":         serial,
-            "gsm.version.baseband":     f"M8350-{random.randint(1000,9999)}GEN_PACK-1",
-            "hw.gsmModem.imei":         self._random_imei(),
-            "wifi.mac.address":         mac,
-            "bluetooth.mac.address":    bt_mac,
-            "phone_id":                 str(uuid.uuid4()),
-            "guid":                     guid,
-            "google_ad_id":             str(uuid.uuid4()),
-            "android_id":               android_id,
-            "build_release":            "11",
-            "build_id":                 build_id,
-            "build_incremental":        incremental,
-            "build_security_patch":     security_patch,
-            "build_fingerprint":        build_fp,
-            "build_description":        desc,
-            "display_density":          int(profile.get("density", 420)),
-            "display_resolution":       profile.get("resolution", "1080x1920"),
-            "timezone":                 timezone,
-            "locale":                   locale,
-        }
-        self.previous_fingerprint = dict(self.fingerprint)
-        return self.fingerprint
+            build_fp = (
+                f"{profile['brand']}/{profile['name']}/{profile['device']}:"
+                f"11/{build_id}/{incremental}:user/release-keys"
+            )
+            desc = f"{profile['name']}-user 11 {build_id} {incremental} release-keys"
+            timezone = random.choice(profile.get("timezones", ["America/New_York"]))
+            locale = random.choice(profile.get("locales", ["en-US"]))
+
+            candidate = {
+                "ro.product.manufacturer":  profile["manufacturer"],
+                "ro.product.brand":         profile["brand"],
+                "ro.product.model":         profile["model"],
+                "ro.product.name":          profile["name"],
+                "ro.product.device":        profile["device"],
+                "ro.product.board":         profile.get("board", profile["device"]),
+                "ro.board.platform":        profile.get("platform", profile["device"]),
+                "ro.hardware":              profile.get("hardware", profile.get("platform", profile["device"])),
+                "ro.serialno":              serial,
+                "ro.boot.serialno":         serial,
+                "gsm.version.baseband":     f"M8350-{random.randint(1000,9999)}GEN_PACK-1",
+                "hw.gsmModem.imei":         imei,
+                "wifi.mac.address":         mac,
+                "bluetooth.mac.address":    bt_mac,
+                "phone_id":                 phone_id,
+                "guid":                     guid,
+                # Filled post-boot by reading the OS ad-id provider (if available).
+                "google_ad_id":             None,
+                "android_id":               android_id,
+                "build_release":            "11",
+                "build_id":                 build_id,
+                "build_incremental":        incremental,
+                "build_security_patch":     security_patch,
+                "build_fingerprint":        build_fp,
+                "build_description":        desc,
+                "display_density":          int(profile.get("density", 420)),
+                "display_resolution":       profile.get("resolution", "1080x1920"),
+                "timezone":                 timezone,
+                "locale":                   locale,
+            }
+            if self._identity_candidate_reused(candidate):
+                continue
+            self.fingerprint = candidate
+            self.previous_fingerprint = dict(self.fingerprint)
+            return self.fingerprint
+        raise RuntimeError("Could not generate a unique identity after multiple attempts.")
 
     def get_device_fingerprint(self):
         if self.fingerprint is None:
@@ -227,7 +326,6 @@ class DeviceManager:
             f"tz={fp['timezone']} | locale={fp['locale']}")
         self.kill_emulator(name=ctx.container_name, port=ctx.adb_port)
         self._boot_start_time = time()
-        
         cmd = self.get_docker_cmd(fp, ctx)
         proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
         container_id = (proc.stdout or "").strip()
@@ -236,7 +334,6 @@ class DeviceManager:
         self._assert_container_running(ctx.container_name)
         self.wait_for_adb(port=ctx.adb_port, timeout=max(BOOT_TIMEOUT, 60),
                           name=ctx.container_name)
-        
         boot_elapsed = round(time() - self._boot_start_time, 1)
         logger.info(f"  🕐 Boot completed in {boot_elapsed}s")
         self._apply_post_boot_identity(fp)
@@ -245,6 +342,7 @@ class DeviceManager:
         if REDROID_VERIFY_STRICT:
             self._verify_identity(fp)
         self._save_identity_report(fp, ctx, boot_elapsed)
+        self._mark_identity_used(fp)
         return {
             "session_id": ctx.session_id,
             "container_name": ctx.container_name,
@@ -291,10 +389,7 @@ class DeviceManager:
         addr = f"localhost:{port}"
         deadline = time() + timeout
         logger.info(f"Waiting for {name} to boot (via ADB)...")
-
-        # Initial connect attempt — heal unauthorized states
         self._adb_connect_with_retry(addr)
-
         while time() < deadline:
             try:
                 proc = subprocess.run(
@@ -302,25 +397,20 @@ class DeviceManager:
                     capture_output=True, text=True, timeout=20)
             except Exception:
                 self._adb_connect_with_retry(addr)
+                print("  ⚠️ ADB connection issue — retrying...")
                 continue
-
             stdout = (proc.stdout or "").strip()
             stderr = (proc.stderr or "").strip()
-
-            # Heal ADB unauthorized mid-boot
             if "unauthorized" in stderr or "unauthorized" in stdout:
                 logger.warning("  ⚠️ ADB unauthorized — restarting server...")
                 self._restart_adb_server()
                 self._adb_connect_with_retry(addr)
                 sleep(3)
                 continue
-
             if stdout == "1":
                 logger.info(f"  ✅ {name} boot_completed=1")
                 return
-
             sleep(3)
-
         p = subprocess.run([str(ADB_BIN), "-s", addr, "get-state"],
                            capture_output=True, text=True, timeout=5)
         state = p.stdout.strip()
@@ -329,7 +419,6 @@ class DeviceManager:
             f"logs_tail='{self._get_container_logs(name)}'")
 
     def _adb_connect_with_retry(self, addr, max_attempts=3):
-        """Connect ADB to addr. On 'unauthorized', kill+restart the server."""
         for attempt in range(1, max_attempts + 1):
             proc = subprocess.run(
                 [str(ADB_BIN), "connect", addr],
@@ -340,11 +429,10 @@ class DeviceManager:
                 self._restart_adb_server()
                 sleep(2)
                 continue
-            return  # connected (or already connected)
+            return 
         logger.warning("  Could not resolve ADB unauthorized after retries — proceeding.")
 
     def _restart_adb_server(self):
-        """Kill and restart the adb server."""
         subprocess.run([str(ADB_BIN), "kill-server"],
                        capture_output=True, timeout=10)
         sleep(1)
@@ -389,6 +477,115 @@ class DeviceManager:
         for cmd in commands:
             self._adb(*cmd, check=False, timeout=12)
         logger.info(f"  🔑 android_id={fp['android_id']} | tz={timezone} | locale={locale}")
+        self._populate_google_ad_id(fp)
+
+    @staticmethod
+    def _extract_uuid(text):
+        if not text:
+            return None
+        match = re.search(
+            r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
+            text,
+        )
+        if match:
+            return match.group(0).lower()
+        return None
+
+    def _is_package_installed(self, package_name):
+        try:
+            result = self._adb("shell", "pm", "path", package_name, timeout=12)
+            return "package:" in (result.stdout or "")
+        except Exception:
+            return False
+
+    def _dump_uia_xml(self, remote_path="/sdcard/gaid_uia.xml"):
+        try:
+            self._adb("shell", "uiautomator", "dump", remote_path, check=False, timeout=15)
+            result = self._adb("shell", "cat", remote_path, timeout=12)
+            xml_text = result.stdout or ""
+            return xml_text
+        except Exception:
+            return ""
+
+    def _parse_bounds_center(self, bounds):
+        m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds or "")
+        if not m:
+            return None
+        x1, y1, x2, y2 = map(int, m.groups())
+        return ((x1 + x2) // 2, (y1 + y2) // 2)
+
+    def _tap_node_text(self, candidates):
+        xml_text = self._dump_uia_xml()
+        if not xml_text:
+            return False
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError:
+            return False
+        lowered = [c.lower() for c in candidates]
+        for node in root.iter("node"):
+            text = (node.attrib.get("text") or "").strip()
+            content = (node.attrib.get("content-desc") or "").strip()
+            hay = f"{text} {content}".lower()
+            if not hay:
+                continue
+            if any(token in hay for token in lowered):
+                center = self._parse_bounds_center(node.attrib.get("bounds"))
+                if center:
+                    self._adb("shell", "input", "tap", str(center[0]), str(center[1]), check=False, timeout=10)
+                    sleep(0.8)
+                    return True
+        return False
+
+    def _probe_gaid_from_ads_settings(self):
+        # Try known entry points to Google Ads settings.
+        launchers = [
+            ("shell", "am", "start", "-W", "-a", "com.google.android.gms.settings.ADS_PRIVACY"),
+            ("shell", "am", "start", "-W", "-n",
+             "com.google.android.gms/com.google.android.gms.ads.settings.AdsSettingsActivity"),
+        ]
+        launched = False
+        for launcher in launchers:
+            res = self._adb(*launcher, check=False, timeout=GAID_DISCOVERY_TIMEOUT)
+            blob = ((res.stdout or "") + "\n" + (res.stderr or "")).lower()
+            if "error" not in blob and "exception" not in blob:
+                launched = True
+                break
+        if not launched:
+            return None
+
+        sleep(2.0)
+        if GAID_RESET_ON_BOOT:
+            # Best-effort reset path. Text varies by Android/GMS version.
+            reset_tapped = self._tap_node_text(["reset advertising id", "create new advertising id"])
+            if reset_tapped:
+                self._tap_node_text(["ok", "confirm"])
+                sleep(1.5)
+
+        xml_text = self._dump_uia_xml()
+        gaid = self._extract_uuid(xml_text)
+        # Return home regardless of success.
+        self._adb("shell", "input", "keyevent", "3", check=False, timeout=8)
+        return gaid
+
+    def _populate_google_ad_id(self, fp):
+        if not GAID_DISCOVERY_ENABLED:
+            fp["google_ad_id"] = None
+            return
+        if not self._is_package_installed("com.google.android.gms"):
+            logger.info("  ℹ️ Google Play services not installed; GAID unavailable on this session.")
+            fp["google_ad_id"] = None
+            return
+        gaid = self._probe_gaid_from_ads_settings()
+        if gaid and gaid != "00000000-0000-0000-0000-000000000000":
+            fp["google_ad_id"] = gaid
+            logger.info(f"  🆔 GAID detected: {gaid}")
+            return
+        if gaid == "00000000-0000-0000-0000-000000000000":
+            logger.info("  ℹ️ GAID is zeroed (deleted/limited by device setting).")
+        else:
+            logger.warning("  ⚠️ GAID probe did not return a valid UUID.")
+        fp["google_ad_id"] = gaid or None
 
     def _read_prop(self, key):
         try:
@@ -438,12 +635,82 @@ class DeviceManager:
             text = "; ".join(f"{k}: expected '{e}' got '{a}'" for k, e, a in mismatches)
             raise Exception(f"Identity verification failed: {text}")
 
+        soft_checks = {
+            "ro.product.board": fp.get("ro.product.board"),
+            "ro.board.platform": fp.get("ro.board.platform"),
+            "ro.hardware": fp.get("ro.hardware"),
+            "gsm.version.baseband": fp.get("gsm.version.baseband"),
+        }
+        soft_gaps = []
+        for key, expected in soft_checks.items():
+            actual = self._read_prop(key).replace("%20", " ").strip()
+            expected_norm = (expected or "").replace("%20", " ").strip()
+            if expected_norm and actual and actual != expected_norm:
+                soft_gaps.append(f"{key}: expected '{expected_norm}' got '{actual}'")
+        if soft_gaps:
+            logger.warning("  ⚠️ Soft identity gaps: " + "; ".join(soft_gaps))
+
         logger.info(
             f"  ✅ Identity verified: "
             f"model={actuals.get('ro.product.model')} "
             f"serial={actuals.get('ro.serialno')} "
             f"android_id={android_id_actual} "
-            f"mac={self._read_eth_mac()}")
+            f"mac={self._read_eth_mac()} "
+            f"gaid={fp.get('google_ad_id') or 'n/a'}")
+
+    def _collect_runtime_identity_snapshot(self):
+        props_of_interest = [
+            "ro.product.manufacturer",
+            "ro.product.brand",
+            "ro.product.model",
+            "ro.product.name",
+            "ro.product.device",
+            "ro.product.board",
+            "ro.board.platform",
+            "ro.hardware",
+            "ro.serialno",
+            "ro.boot.serialno",
+            "ro.build.fingerprint",
+            "ro.system.build.fingerprint",
+            "ro.vendor.build.fingerprint",
+            "ro.product.build.fingerprint",
+            "ro.bootimage.build.fingerprint",
+            "ro.build.tags",
+            "ro.build.type",
+            "ro.build.version.release",
+            "ro.build.version.security_patch",
+            "ro.product.cpu.abilist",
+            "ro.product.cpu.abilist32",
+            "ro.product.cpu.abilist64",
+        ]
+        snapshot = {
+            "props": {key: self._read_prop(key) for key in props_of_interest},
+            "settings": {
+                "secure.android_id": self._read_setting("secure", "android_id"),
+                "secure.bluetooth_name": self._read_setting("secure", "bluetooth_name"),
+                "global.device_name": self._read_setting("global", "device_name"),
+                "global.http_proxy": self._read_setting("global", "http_proxy"),
+                "system.user_timezone": self._read_setting("system", "user_timezone"),
+            },
+            "network": {
+                "eth0_mac": self._read_eth_mac(),
+            },
+            "kernel": {},
+        }
+        for label, path in [
+            ("cpuinfo", "/proc/cpuinfo"),
+            ("version", "/proc/version"),
+            ("cmdline", "/proc/cmdline"),
+        ]:
+            try:
+                result = self._adb("shell", "cat", path, timeout=10)
+                text = (result.stdout or "").strip()
+            except Exception:
+                text = ""
+            if len(text) > 4000:
+                text = text[:4000] + "...<truncated>"
+            snapshot["kernel"][label] = text
+        return snapshot
 
     def _dump_fingerprint_audit(self, ctx: SessionContext):
         audit_dir = ctx.runtime_dir
@@ -457,6 +724,10 @@ class DeviceManager:
                         ["ro.product", "ro.build", "ro.serialno", "ro.boot",
                          "persist.sys", "android_id", "bluetooth", "wifi"])]
             audit_file.write_text("\n".join(sorted(fp_lines)), encoding="utf-8")
+            snapshot = self._collect_runtime_identity_snapshot()
+            (audit_dir / f"runtime_identity_snapshot_{ts}.json").write_text(
+                json.dumps(snapshot, indent=2), encoding="utf-8"
+            )
             logger.info(f"  📋 Audit dumped: {audit_file}")
         except Exception as e:
             pass
@@ -481,10 +752,12 @@ class DeviceManager:
                 "bt_mac": fp["bluetooth.mac.address"],
                 "imei": fp["hw.gsmModem.imei"],
                 "build_fingerprint": fp["build_fingerprint"],
+                "google_ad_id": fp.get("google_ad_id"),
                 "timezone": fp.get("timezone"),
                 "locale": fp.get("locale"),
                 "display": fp.get("display_resolution"),
             },
+            "runtime_observed": self._collect_runtime_identity_snapshot(),
         }
         report_file = report_dir / "identity_report.json"
         report_file.write_text(json.dumps(report, indent=2), encoding="utf-8")
@@ -496,44 +769,33 @@ class DeviceManager:
             host, port = addr.split(":")
         else:
             host, port = addr, "1081"
-            
         logger.info(f"  🌐 Configuring global proxy: {host}:{port}")
-        
-        # Method 1 & 2: Set both combined and separated settings
         self._adb("shell", "settings", "put", "global", "http_proxy", f"{host}:{port}",
                    check=False, timeout=10)
         self._adb("shell", "settings", "put", "global", "global_http_proxy_host", host,
                    check=False, timeout=10)
         self._adb("shell", "settings", "put", "global", "global_http_proxy_port", port,
                    check=False, timeout=10)
-        
-        # Apply DNS servers directly
         self._adb("shell", "settings", "put", "global", "net.dns1", "8.8.8.8",
                    check=False, timeout=10)
         self._adb("shell", "settings", "put", "global", "net.dns2", "1.1.1.1",
                    check=False, timeout=10)
-               
         logger.info(f"  ✅ Proxy applied (Host: {host}, Port: {port})")
         logger.info(f"  🔍 DNS configured: 8.8.8.8, 1.1.1.1")
 
     def verify_network_connectivity(self, proxy_address=None):
-        """Verify that the device can reach the internet through the proxy."""
         addr = proxy_address or DEVICE_PROXY_ADDRESS
         logger.info(f"  📡 Testing proxy connectivity through {addr}...")
-        
-        # Test HTTP proxy connectivity using an actual request
-        # ReDroid has curl built-in usually, we can test google.com
         result = self._adb("shell", "curl", "-x", f"http://{addr}", "-s", "-I", "http://google.com", timeout=15)
         if "HTTP/" in (result.stdout or "") or "301" in (result.stdout or ""):
             logger.info("  ✅ Proxy connectivity verified")
             return True
         else:
             logger.warning("  ⚠️  Proxy connectivity test inconclusive (curl failed/timed out).")
-            # Don't fail hard
             return True
 
     def seed_gallery(self):
-        local = PROJECT_BIN / "selfie.jpg"
+        local = PROJECT_BIN / "dummy_photo.JPG"
         if not local.exists():
             return
         self._adb("push", str(local), GALLERY_PHOTO_DEST, check=True, timeout=30)
@@ -579,10 +841,9 @@ class DeviceManager:
         opts.app_activity           = "com.instagram.mainactivity.LauncherActivity"
         opts.app_wait_activity      = "com.instagram.*"
         opts.new_command_timeout    = 300
-        # Give UIAutomator2 enough time to start — avoids spurious session errors
-        opts.uiautomator2_server_launch_timeout = 60_000   # ms
-        opts.uiautomator2_server_install_timeout = 60_000  # ms
-        opts.adb_exec_timeout       = 60_000               # ms
+        opts.uiautomator2_server_launch_timeout = 60_000   
+        opts.uiautomator2_server_install_timeout = 60_000  
+        opts.adb_exec_timeout       = 60_000             
         try:
             driver = webdriver.Remote(url, options=opts)
         except Exception as e:
@@ -594,21 +855,16 @@ class DeviceManager:
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
-        
-        # Lowercase for more robust matching if not exact
         if exact:
             xpath = f'//*[@text="{text}"]'
         else:
             xpath = f'//*[contains(translate(@text, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "{text.lower()}")]'
-            
         try:
             el = WebDriverWait(driver, timeout).until(
                 EC.element_to_be_clickable((By.XPATH, xpath)))
             el.click()
             return True
         except Exception as e:
-            # If it's a critical button, we let the caller handle the exception or raise it
-            # But for behavior, we might want to just return False
             raise e
 
     def type_text(self, driver, hint_text, input_text, exact=False, timeout=UI_ELEMENT_TIMEOUT):

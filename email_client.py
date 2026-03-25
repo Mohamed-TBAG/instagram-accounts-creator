@@ -4,13 +4,10 @@ import re
 import string
 import time
 import requests
-
 logger = logging.getLogger("EmailClient")
-
 EMAIL_API_BASE = "http://65.108.211.167"
 EMAIL_API_KEY = "Pp66778899_Secure_Email_Access"
 EMAIL_DOMAIN = "iraqimail.com"
-
 CODE_PATTERN = re.compile(r'\b(\d{6})\b')
 
 class EmailClient:
@@ -33,34 +30,26 @@ class EmailClient:
         url = f"{self.api_base}/api/emails"
         deadline = time.time() + timeout
         attempt = 0
-
         while time.time() < deadline:
             attempt += 1
-            
             resp = self.session.get(url, params={"alias": alias_name, "limit": 5}, timeout=10)
             resp.raise_for_status()
             emails = resp.json()
-
             if emails:
                 for email in emails:
                     subject = email.get("subject", "")
                     body = email.get("body", "") or email.get("snippet", "")
-
                     match = CODE_PATTERN.search(subject) or CODE_PATTERN.search(body)
                     if match:
                         code = match.group(1)
                         email_id = email.get("id")
                         logger.info(f"Verification code found: {code} (attempt {attempt})")
-
                         if email_id:
                             self._delete_email(email_id)
-
                         return code
-
             remaining = round(deadline - time.time(), 0)
             logger.debug(f"No code yet for {alias_name}, retrying in {interval}s ({remaining}s left)")
             time.sleep(interval)
-
         raise TimeoutError(f"No verification code received for {alias_name} within {timeout}s")
 
     def _delete_email(self, email_id: int):
