@@ -104,6 +104,9 @@ REDROID_VERIFY_STRICT   = _env_bool("REDROID_VERIFY_STRICT", True)
 GAID_DISCOVERY_ENABLED = _env_bool("GAID_DISCOVERY_ENABLED", True)
 GAID_RESET_ON_BOOT = _env_bool("GAID_RESET_ON_BOOT", False)
 GAID_DISCOVERY_TIMEOUT = _env_int("GAID_DISCOVERY_TIMEOUT", 20, 5, 120)
+IDENTITY_GATE_MODE = _env_str("IDENTITY_GATE_MODE", "warn").lower()
+if IDENTITY_GATE_MODE not in {"off", "warn", "fail"}:
+    raise ValueError("IDENTITY_GATE_MODE must be one of: off, warn, fail")
 
 API_URL = _env_str("API_URL", "http://195.138.76.179:8000/connect")
 PROXY_HOST = _env_str("PROXY_HOST", "127.0.0.1")
@@ -113,6 +116,7 @@ DEVICE_PROXY_ADDRESS = _env_str("DEVICE_PROXY_ADDRESS", "10.0.2.2:1081")
 
 INSTAGRAM_PACKAGE = _env_str("INSTAGRAM_PACKAGE", "com.instagram.android")
 INSTAGRAM_LOGIN_URL = _env_str("INSTAGRAM_LOGIN_URL", "https://www.instagram.com/accounts/login/")
+AUTOMATION_LOCALE = _env_str("AUTOMATION_LOCALE", "en-US")
 GALLERY_PHOTO_NAME = "selfie.jpg"
 GALLERY_PHOTO_DEST = "/sdcard/Pictures/selfie.jpg"
 

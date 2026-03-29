@@ -21,7 +21,7 @@ from config import (
     ADB_DEFAULT_TIMEOUT, BOOT_TIMEOUT, APPIUM_CONNECT_TIMEOUT,
     REDROID_IMAGE, REDROID_GPU_MODE, REDROID_WIDTH, REDROID_HEIGHT, REDROID_FPS,
     REDROID_AUDIT_ENABLED, REDROID_VERIFY_STRICT, GAID_DISCOVERY_ENABLED,
-    GAID_RESET_ON_BOOT, GAID_DISCOVERY_TIMEOUT,
+    GAID_RESET_ON_BOOT, GAID_DISCOVERY_TIMEOUT, IDENTITY_GATE_MODE, AUTOMATION_LOCALE,
     DEVICE_PROFILES,
 )
 from session import SessionContext
@@ -34,6 +34,8 @@ class DeviceManager:
         self.fingerprint = None
         self.previous_fingerprint = None
         self._boot_start_time = None
+        self.current_runtime_dir = None
+        self.current_session_id = None
         self.identity_registry_path = LOG_DIR / "identity_registry.json"
         self.identity_registry = self._load_identity_registry()
         if not ADB_BIN.exists():
@@ -188,7 +190,7 @@ class DeviceManager:
             )
             desc = f"{profile['name']}-user 11 {build_id} {incremental} release-keys"
             timezone = random.choice(profile.get("timezones", ["America/New_York"]))
-            locale = random.choice(profile.get("locales", ["en-US"]))
+            locale = AUTOMATION_LOCALE
 
             candidate = {
                 "ro.product.manufacturer":  profile["manufacturer"],
@@ -241,6 +243,7 @@ class DeviceManager:
         pv = self._prop_val
         build_fp = fp["build_fingerprint"]
         desc = fp["build_description"]
+        flavor = f"{fp['ro.product.name']}-user"
         return [
             f"ro.product.manufacturer={pv(fp['ro.product.manufacturer'])}",
             f"ro.product.brand={pv(fp['ro.product.brand'])}",
@@ -262,7 +265,20 @@ class DeviceManager:
             f"ro.product.product.model={pv(fp['ro.product.model'])}",
             f"ro.product.product.name={pv(fp['ro.product.name'])}",
             f"ro.product.product.device={pv(fp['ro.product.device'])}",
+            f"ro.product.odm.manufacturer={pv(fp['ro.product.manufacturer'])}",
+            f"ro.product.odm.brand={pv(fp['ro.product.brand'])}",
+            f"ro.product.odm.model={pv(fp['ro.product.model'])}",
+            f"ro.product.odm.name={pv(fp['ro.product.name'])}",
+            f"ro.product.odm.device={pv(fp['ro.product.device'])}",
+            f"ro.product.system_ext.manufacturer={pv(fp['ro.product.manufacturer'])}",
+            f"ro.product.system_ext.brand={pv(fp['ro.product.brand'])}",
+            f"ro.product.system_ext.model={pv(fp['ro.product.model'])}",
+            f"ro.product.system_ext.name={pv(fp['ro.product.name'])}",
+            f"ro.product.system_ext.device={pv(fp['ro.product.device'])}",
+            f"ro.product.locale={pv(fp['locale'])}",
             f"androidboot.serialno={fp['ro.serialno']}",
+            f"ro.build.product={pv(fp['ro.product.device'])}",
+            f"ro.build.flavor={pv(flavor)}",
             f"ro.build.fingerprint={pv(build_fp)}",
             f"ro.system.build.fingerprint={pv(build_fp)}",
             f"ro.vendor.build.fingerprint={pv(build_fp)}",
@@ -274,8 +290,23 @@ class DeviceManager:
             f"ro.build.version.security_patch={pv(fp['build_security_patch'])}",
             f"ro.build.description={pv(desc)}",
             f"ro.build.display.id={pv(desc)}",
+            f"ro.system.build.id={pv(fp['build_id'])}",
+            f"ro.vendor.build.id={pv(fp['build_id'])}",
+            f"ro.product.build.id={pv(fp['build_id'])}",
+            f"ro.system.build.version.incremental={pv(fp['build_incremental'])}",
+            f"ro.vendor.build.version.incremental={pv(fp['build_incremental'])}",
+            f"ro.product.build.version.incremental={pv(fp['build_incremental'])}",
+            f"ro.system.build.version.release={pv(fp['build_release'])}",
+            f"ro.vendor.build.version.release={pv(fp['build_release'])}",
+            f"ro.product.build.version.release={pv(fp['build_release'])}",
             "ro.build.type=user",
             "ro.build.tags=release-keys",
+            "ro.system.build.type=user",
+            "ro.vendor.build.type=user",
+            "ro.product.build.type=user",
+            "ro.system.build.tags=release-keys",
+            "ro.vendor.build.tags=release-keys",
+            "ro.product.build.tags=release-keys",
         ]
 
     def get_docker_cmd(self, fp, ctx: SessionContext):
@@ -315,6 +346,8 @@ class DeviceManager:
     def start_emulator(self, ctx: SessionContext):
         self._validate_container_inputs(ctx.container_name, ctx.adb_port)
         ctx.runtime_dir.mkdir(parents=True, exist_ok=True)
+        self.current_runtime_dir = ctx.runtime_dir
+        self.current_session_id = ctx.session_id
         self.adb_port = ctx.adb_port
         self._preflight_docker()
         self._assert_binderfs()
@@ -337,11 +370,14 @@ class DeviceManager:
         boot_elapsed = round(time() - self._boot_start_time, 1)
         logger.info(f"  🕐 Boot completed in {boot_elapsed}s")
         self._apply_post_boot_identity(fp)
+        runtime_snapshot = self._collect_runtime_identity_snapshot()
         if REDROID_AUDIT_ENABLED:
-            self._dump_fingerprint_audit(ctx)
+            self._dump_fingerprint_audit(ctx, runtime_snapshot=runtime_snapshot)
         if REDROID_VERIFY_STRICT:
             self._verify_identity(fp)
-        self._save_identity_report(fp, ctx, boot_elapsed)
+        quality = self._assess_identity_quality(fp, runtime_snapshot)
+        self._enforce_identity_gate(quality)
+        self._save_identity_report(fp, ctx, boot_elapsed, runtime_snapshot=runtime_snapshot, quality=quality)
         self._mark_identity_used(fp)
         return {
             "session_id": ctx.session_id,
@@ -455,8 +491,10 @@ class DeviceManager:
     def _apply_post_boot_identity(self, fp):
         logger.info("  🔧 Applying post-boot identity...")
         timezone = fp.get("timezone", "America/New_York")
-        locale = fp.get("locale", "en-US")
+        locale = AUTOMATION_LOCALE
         lang, _, region = locale.partition("-")
+        if not region:
+            region = "US"
         battery_level = random.randint(15, 92)
         battery_temp = random.randint(280, 390)
         commands = [
@@ -469,6 +507,8 @@ class DeviceManager:
             ("shell", "setprop",  "persist.sys.locale",   locale),
             ("shell", "setprop",  "persist.sys.language",  lang),
             ("shell", "setprop",  "persist.sys.country",   region),
+            ("shell", "settings", "put", "system", "system_locales", locale),
+            ("shell", "cmd", "locale", "set", locale),
             ("shell", "dumpsys",  "battery", "unplug"),
             ("shell", "dumpsys",  "battery", "set", "level", str(battery_level)),
             ("shell", "dumpsys",  "battery", "set", "temp", str(battery_temp)),
@@ -615,8 +655,12 @@ class DeviceManager:
             "ro.product.model": fp["ro.product.model"],
             "ro.product.name": fp["ro.product.name"],
             "ro.product.device": fp["ro.product.device"],
+            "ro.product.odm.brand": fp["ro.product.brand"],
+            "ro.product.system_ext.brand": fp["ro.product.brand"],
             "ro.serialno": fp["ro.serialno"],
             "ro.build.fingerprint": fp["build_fingerprint"],
+            "ro.build.tags": "release-keys",
+            "ro.build.type": "user",
         }
         mismatches = []
         actuals = {}
@@ -665,12 +709,19 @@ class DeviceManager:
             "ro.product.model",
             "ro.product.name",
             "ro.product.device",
+            "ro.boot.hardware",
+            "ro.product.odm.brand",
+            "ro.product.odm.device",
+            "ro.product.system_ext.brand",
+            "ro.product.system_ext.device",
             "ro.product.board",
             "ro.board.platform",
             "ro.hardware",
             "ro.serialno",
             "ro.boot.serialno",
             "ro.build.fingerprint",
+            "ro.build.flavor",
+            "ro.build.product",
             "ro.system.build.fingerprint",
             "ro.vendor.build.fingerprint",
             "ro.product.build.fingerprint",
@@ -679,6 +730,9 @@ class DeviceManager:
             "ro.build.type",
             "ro.build.version.release",
             "ro.build.version.security_patch",
+            "ro.product.build.tags",
+            "ro.product.build.type",
+            "ro.product.build.id",
             "ro.product.cpu.abilist",
             "ro.product.cpu.abilist32",
             "ro.product.cpu.abilist64",
@@ -712,7 +766,108 @@ class DeviceManager:
             snapshot["kernel"][label] = text
         return snapshot
 
-    def _dump_fingerprint_audit(self, ctx: SessionContext):
+    def _assess_identity_quality(self, fp, runtime_snapshot):
+        props = runtime_snapshot.get("props", {})
+        findings = []
+
+        def add(level, key, expected, actual, message):
+            findings.append({
+                "severity": level,
+                "key": key,
+                "expected": expected,
+                "actual": actual,
+                "message": message,
+            })
+
+        strict_pairs = {
+            "ro.product.manufacturer": fp.get("ro.product.manufacturer"),
+            "ro.product.brand": fp.get("ro.product.brand"),
+            "ro.product.model": fp.get("ro.product.model"),
+            "ro.product.name": fp.get("ro.product.name"),
+            "ro.product.device": fp.get("ro.product.device"),
+            "ro.serialno": fp.get("ro.serialno"),
+            "ro.boot.serialno": fp.get("ro.boot.serialno"),
+            "ro.build.fingerprint": fp.get("build_fingerprint"),
+            "ro.system.build.fingerprint": fp.get("build_fingerprint"),
+            "ro.vendor.build.fingerprint": fp.get("build_fingerprint"),
+            "ro.product.build.fingerprint": fp.get("build_fingerprint"),
+            "ro.bootimage.build.fingerprint": fp.get("build_fingerprint"),
+        }
+        for key, expected in strict_pairs.items():
+            actual = (props.get(key) or "").replace("%20", " ").strip()
+            expected_norm = (expected or "").replace("%20", " ").strip()
+            if expected_norm and actual and expected_norm != actual:
+                add("high", key, expected_norm, actual, "Mismatch with generated identity")
+
+        marker_checks = [
+            ("ro.build.flavor", "redroid"),
+            ("ro.build.product", "redroid"),
+            ("ro.product.odm.device", "redroid"),
+            ("ro.product.system_ext.device", "redroid"),
+            ("ro.boot.hardware", "redroid"),
+            ("ro.hardware", "redroid"),
+            ("ro.product.cpu.abilist", "x86_64"),
+        ]
+        for key, marker in marker_checks:
+            actual = (props.get(key) or "").strip()
+            if marker and marker in actual.lower():
+                add("medium", key, "non-redroid marker", actual, "Static base-image marker remains")
+
+        build_tags = (props.get("ro.product.build.tags") or "").strip().lower()
+        build_type = (props.get("ro.product.build.type") or "").strip().lower()
+        if build_tags and build_tags != "release-keys":
+            add("medium", "ro.product.build.tags", "release-keys", build_tags, "Product partition still exposes non-release tag")
+        if build_type and build_type != "user":
+            add("medium", "ro.product.build.type", "user", build_type, "Product partition still exposes non-user build type")
+
+        gaid = fp.get("google_ad_id")
+        if gaid is None:
+            add("low", "google_ad_id", "uuid or zero-id", "null", "GAID unavailable in current runtime")
+
+        score = 100
+        for finding in findings:
+            if finding["severity"] == "high":
+                score -= 20
+            elif finding["severity"] == "medium":
+                score -= 8
+            else:
+                score -= 2
+        if score < 0:
+            score = 0
+
+        counts = {
+            "high": sum(1 for f in findings if f["severity"] == "high"),
+            "medium": sum(1 for f in findings if f["severity"] == "medium"),
+            "low": sum(1 for f in findings if f["severity"] == "low"),
+        }
+        logger.info(
+            f"  🧪 Identity quality score={score}/100 "
+            f"(high={counts['high']}, medium={counts['medium']}, low={counts['low']})"
+        )
+        return {
+            "score": score,
+            "counts": counts,
+            "findings": findings,
+        }
+
+    def _enforce_identity_gate(self, quality):
+        if IDENTITY_GATE_MODE == "off":
+            return
+        if IDENTITY_GATE_MODE == "warn":
+            if quality["counts"]["high"] > 0 or quality["counts"]["medium"] > 0:
+                logger.warning(
+                    "  ⚠️ Identity gate warning: quality issues detected "
+                    f"(high={quality['counts']['high']}, medium={quality['counts']['medium']})"
+                )
+            return
+        # fail mode
+        if quality["counts"]["high"] > 0:
+            raise RuntimeError(
+                "Identity gate failed: high-severity identity mismatches detected "
+                f"(high={quality['counts']['high']})"
+            )
+
+    def _dump_fingerprint_audit(self, ctx: SessionContext, runtime_snapshot=None):
         audit_dir = ctx.runtime_dir
         audit_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -724,7 +879,7 @@ class DeviceManager:
                         ["ro.product", "ro.build", "ro.serialno", "ro.boot",
                          "persist.sys", "android_id", "bluetooth", "wifi"])]
             audit_file.write_text("\n".join(sorted(fp_lines)), encoding="utf-8")
-            snapshot = self._collect_runtime_identity_snapshot()
+            snapshot = runtime_snapshot or self._collect_runtime_identity_snapshot()
             (audit_dir / f"runtime_identity_snapshot_{ts}.json").write_text(
                 json.dumps(snapshot, indent=2), encoding="utf-8"
             )
@@ -732,9 +887,11 @@ class DeviceManager:
         except Exception as e:
             pass
 
-    def _save_identity_report(self, fp, ctx: SessionContext, boot_elapsed):
+    def _save_identity_report(self, fp, ctx: SessionContext, boot_elapsed, runtime_snapshot=None, quality=None):
         report_dir = ctx.runtime_dir
         report_dir.mkdir(parents=True, exist_ok=True)
+        snapshot = runtime_snapshot or self._collect_runtime_identity_snapshot()
+        quality_report = quality or self._assess_identity_quality(fp, snapshot)
         report = {
             "session_id": ctx.session_id,
             "container_name": ctx.container_name,
@@ -757,7 +914,8 @@ class DeviceManager:
                 "locale": fp.get("locale"),
                 "display": fp.get("display_resolution"),
             },
-            "runtime_observed": self._collect_runtime_identity_snapshot(),
+            "runtime_observed": snapshot,
+            "identity_quality": quality_report,
         }
         report_file = report_dir / "identity_report.json"
         report_file.write_text(json.dumps(report, indent=2), encoding="utf-8")
